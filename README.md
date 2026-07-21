@@ -1,2 +1,12 @@
-# bigredcreativeproductions
-Official website and digital platform for Big Red Creative Productions, providing branding, graphic design, print production, promotional marketing, event management, and creative solutions.
+# Big Red Creative Productions
+
+Official website for Big Red Creative Productions.
+
+## Run locally
+
+```bash
+npm install
+npm run dev
+```
+
+Open http://localhost:3000
