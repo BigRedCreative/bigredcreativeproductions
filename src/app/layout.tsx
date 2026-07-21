@@ -1,14 +1,14 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import { siteConfig } from "@/config/site";
 
 export const metadata: Metadata = {
-  title: "Big Red Creative Productions | Branding, Print, Promotions & Events",
-  description:
-    "Michigan creative production company delivering branding, graphic design, packaging, print production, promotions and event management.",
-  metadataBase: new URL("https://bigredcreativeproductions.com"),
+  title: siteConfig.metaTitle,
+  description: siteConfig.description,
+  metadataBase: new URL(siteConfig.url),
   openGraph: {
-    title: "Big Red Creative Productions",
-    description: "Bold branding, print, promotions and unforgettable events.",
+    title: siteConfig.name,
+    description: siteConfig.ogDescription,
     type: "website",
   },
 };
