@@ -11,7 +11,10 @@ export default function ProjectGallery({ images }: ProjectGalleryProps) {
       <span className="kicker">Gallery</span>
       <div className="project-gallery-grid">
         {images.map((image) => (
-          <div className="project-gallery-item" key={image.src}>
+          <div
+            className={`project-gallery-item${image.lightBackground ? " project-gallery-item--light" : ""}`}
+            key={image.src}
+          >
             <Image
               src={image.src}
               alt={image.alt}

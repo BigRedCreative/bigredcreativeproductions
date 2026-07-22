@@ -25,6 +25,11 @@ export const MAX_FEATURED_PROJECTS = 3;
 export type ProjectImage = {
   src: string;
   alt: string;
+  // Gallery items default to a dark background (matches most label/product
+  // artwork, which is already full-bleed black). Set true only for images
+  // that read poorly on black — e.g. a dark-outlined logo on a transparent
+  // background.
+  lightBackground?: boolean;
 };
 
 export type ProjectResult = {
@@ -102,6 +107,65 @@ export const projects: Project[] = [
     featured: true,
     className: "project-red",
     stamp: "FRESH DROP",
+    heroImage: {
+      src: projectImagePath("sp-juices", "hero.png"),
+      alt: "SP Juices hero artwork featuring the SP monogram, tropical fruit, Soul Cleanse and Soul Bomb bottle mockups, bold SP JUICE lettering, and cold-pressed organic branding.",
+    },
+    gallery: [
+      {
+        src: projectImagePath("sp-juices", "logo.png"),
+        alt: "Transparent SP Juices monogram logo with bold black outline and dripping graphic details.",
+        lightBackground: true,
+      },
+      {
+        src: projectImagePath("sp-juices", "menu.png"),
+        alt: "SP Juices printed juice menu poster listing seven flavors — Soul Revival, Soul Cleanse, Soul Nourish, Soul Glo, Soul Replenish, Mortal Soul, and Seeded Souls — each in a comic-style illustrated card with ingredients and pricing, under a \"100% RAW · COLD PRESSED · NO ADDED SUGAR\" banner.",
+      },
+      {
+        src: projectImagePath("sp-juices", "soulglojuicemockup.png"),
+        alt: "SP Juices Soul Bomb bottle mockup: a 12 oz bottle of orange juice with a black label featuring the SP monogram, mandarin, pineapple, apple, papaya, and turmeric illustrations, and the \"SOUL BOMB\" logotype.",
+      },
+      {
+        src: projectImagePath("sp-juices", "soul-bomb-label.png"),
+        alt: "SP Juices \"Soul Bomb\" label artwork on black, with mandarin, pineapple, apple, papaya, and turmeric illustrations around the SP monogram, a white-and-red \"SOUL BOMB\" logotype, ingredient list, QR code, and 12 OZ / SHAKE WELL details.",
+      },
+      {
+        src: projectImagePath("sp-juices", "soul-charge-label.png"),
+        alt: "SP Juices \"Soul Charge\" label artwork on black, with seeded grapes, green apple, pineapple, lime, beets, ginger, and burdock root illustrations around the SP monogram, and a purple-and-green \"SOUL CHARGE\" logotype with ingredient list.",
+      },
+      {
+        src: projectImagePath("sp-juices", "soul-cleanse-label.png"),
+        alt: "SP Juices \"Soul Cleanse\" label artwork on black, with kale, cilantro, parsley, cucumber, pineapple, lemon, apple, ginger, and burdock root illustrations around the SP monogram, and a green \"SOUL CLEANSE\" logotype with ingredient list.",
+      },
+      {
+        src: projectImagePath("sp-juices", "soul-glo-label.png"),
+        alt: "SP Juices \"Soul Glo\" label artwork on black, with watermelon, raspberry, strawberry, lemon, apple, and pineapple illustrations around the SP monogram, and a neon pink-and-orange \"SOUL GLO\" logotype with ingredient list.",
+      },
+      {
+        src: projectImagePath("sp-juices", "soul-mortal-label.png"),
+        alt: "SP Juices \"Mortal Soul\" label artwork on black, with jackfruit, pineapple, and apple illustrations around the SP monogram, and a blue-and-white \"MORTAL SOUL\" logotype with ingredient list.",
+      },
+      {
+        src: projectImagePath("sp-juices", "soul-nourish-label.png"),
+        alt: "SP Juices \"Soul Nourish\" label artwork on black, with yellow watermelon, pineapple, strawberry, apple, lemon, and raspberry illustrations around the SP monogram, and a teal-and-yellow \"SOUL NOURISH\" logotype with ingredient list.",
+      },
+      {
+        src: projectImagePath("sp-juices", "soul-power-label.png"),
+        alt: "SP Juices \"Soul Power\" label artwork on black, with lemon, cherry, pineapple, and apple illustrations around the SP monogram, and a teal-and-yellow \"SOUL POWER\" logotype with ingredient list.",
+      },
+      {
+        src: projectImagePath("sp-juices", "soul-replenish-label.png"),
+        alt: "SP Juices \"Soul Replenish\" label artwork on black, with soursop, raspberry, mango, pineapple, and apple illustrations around the SP monogram, and a yellow-and-magenta \"SOUL REPLENISH\" logotype with ingredient list.",
+      },
+      {
+        src: projectImagePath("sp-juices", "soul-revival-label.png"),
+        alt: "SP Juices \"Soul Revival\" label artwork on black, with Asian pear, apple, passionfruit, lemon, ginger, and burdock root illustrations around the SP monogram, and a teal-and-red \"SOUL REVIVAL\" logotype with ingredient list.",
+      },
+      {
+        src: projectImagePath("sp-juices", "soul-seeded-label.png"),
+        alt: "SP Juices \"Seeded Souls\" label artwork, with seeded watermelon, blackberry, plums, pineapple, lemon, and apple illustrations around the SP monogram, and a blue-and-teal \"SEEDED SOULS\" logotype with ingredient list on a dark red banner.",
+      },
+    ],
     credits: [
       {
         role: "Creative Direction, Branding, Graphic Design, Packaging Design, Print-Production Artwork",
