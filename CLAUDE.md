@@ -28,6 +28,8 @@ src/
       — one component per homepage section; presentation + structure only
     ProjectHero.tsx, ProjectDetails.tsx, ProjectGallery.tsx, ProjectResults.tsx, ProjectNavigation.tsx
       — sections used only on /work/[slug] project detail pages
+    PortfolioGrid.tsx
+      — client component: renders the homepage project grid + the category filter row
 
   components/ui/
     Button.tsx, SectionHeading.tsx, ProjectCard.tsx, ServiceCard.tsx, Badge.tsx
@@ -38,6 +40,8 @@ src/
                        process, contact form labels, footer wording)
     services.ts      — the services list (title/description/tags)
     projects.ts        — the full portfolio data model + helpers (see "Portfolio system" below)
+    projects.validate.ts — runtime validation for project data, run automatically on import
+    project.template.ts    — copy-paste starter template for a new project (not used by the app)
     navigation.ts        — header nav links + CTA (hrefs derived from config/sections.ts)
 
   config/
@@ -60,16 +64,39 @@ Most content edits should only ever touch `src/data/*.ts` or `src/config/*.ts` �
 
 ## Portfolio system
 
-Every project lives as one object in the `projects` array in `src/data/projects.ts`, typed by the `Project` interface defined at the top of that file. Adding a project to that array automatically:
+Every project lives as one object in the `projects` array in `src/data/projects.ts`, typed by the `Project` type defined at the top of that file. Adding a **published** project to that array automatically:
 
 - generates a static page at `/work/[slug]` (via `generateStaticParams`)
 - generates that page's `<title>`/meta description (via `generateMetadata`, from the project's `seo` field)
-- adds it to the homepage "Selected work" grid, **if** `featured: true`
+- adds it to the homepage "Selected work" grid, **if** `featured: true` (up to `MAX_FEATURED_PROJECTS`)
 - wires up Previous/Next navigation on every project's detail page, in array order (wraps around)
+- makes it filterable by category in the homepage grid
+
+### Validation
+
+`src/data/projects.ts` calls `validateProjects()` (from `src/data/projects.validate.ts`) on the `projects` array as soon as the module loads — so any `npm run dev` or `npm run build` fails immediately, listing **every** problem at once, if project data is invalid. It checks: unique slugs, non-empty titles, no duplicate titles, `featured` is a real boolean, `category`/`status` are valid enum values, `seo.title`/`seo.description` are present, image paths are local (not external URLs) and live under that project's own `/images/projects/[slug]/` folder, and gallery images have no duplicates within a project. This has no dependency beyond plain TypeScript — no validation library was added.
+
+### Categories and services
+
+`category` is a single value from the fixed `PROJECT_CATEGORIES` list in `src/data/projects.ts`: Branding, Packaging, Print Production, Events, Promotions, Web Design, Graphic Design. It drives the homepage filter and the category kicker on the project's detail page. `services` stays a free-form string array describing the actual disciplines used on that project (unchanged from before) — it is not restricted to the category list.
+
+### Portfolio filtering (homepage)
+
+`src/components/PortfolioGrid.tsx` (a client component) renders an "All" + one button per category actually present among the featured projects, and filters the grid client-side with no page reload. It only shows a filter row when there's more than one category to filter by, so a category never appears as a dead-end button with nothing behind it. Filters are plain `<button>` elements (native keyboard support, `aria-pressed` for state) inside a `role="group"` — no animation library, no custom keyboard-handling code.
 
 ### How featured projects are selected
 
-The homepage only renders projects where `featured: true` (see `getFeaturedProjects()` in `src/data/projects.ts`, used by `src/components/Portfolio.tsx`). A project with `featured: false` still gets its own `/work/[slug]` page and still appears in Previous/Next navigation — it just doesn't show up in the homepage grid. Use this to keep the homepage curated as the portfolio grows.
+The homepage renders published projects where `featured: true`, capped at `MAX_FEATURED_PROJECTS` (currently 3, matching the grid's current visual rhythm — see the constant in `src/data/projects.ts`) in their `projects` array order. Mark more than that many as featured to build a rotation; only the first `MAX_FEATURED_PROJECTS` in array order will actually render — the layout never breaks no matter how many are flagged. A project with `featured: false` still gets its own `/work/[slug]` page and still appears in Previous/Next navigation — it just doesn't show up in the homepage grid.
+
+### Draft vs. published projects
+
+Set `status: "draft"` while preparing a project. Draft projects:
+- stay in `src/data/projects.ts` (so you can work on the data ahead of time)
+- are **excluded** from `generateStaticParams`, so `/work/[slug]` is never generated for them and the URL 404s
+- are excluded from the homepage grid, even if `featured: true`
+- are excluded from Previous/Next navigation on other projects' pages
+
+Omit `status` (or set `status: "published"`) to make a project public. `getPublishedProjects()` in `src/data/projects.ts` is the single choke point every public-facing list/lookup goes through — there's no separate place that needs to remember to filter drafts out.
 
 ### Rules against inventing project facts
 
@@ -85,53 +112,17 @@ public/images/projects/[project-slug]/
   gallery-2.jpg              → gallery[1]
 ```
 
-Reference them from `src/data/projects.ts` as `/images/projects/[project-slug]/hero.jpg`, etc. (Next.js serves anything in `public/` from the site root.) All project images use `next/image`, and every image field is `{ src, alt }` — the type system will not let you add an image without alt text.
+Use `projectImagePath(slug, filename)` from `src/data/projects.ts` to build these paths instead of typing them by hand — it just builds the string (`/images/projects/${slug}/${filename}`) and never touches the file system, so it's safe to call at build time. All project images use `next/image`, and every image field is `{ src, alt }` — the type system will not let you add an image without alt text, and the validator will flag any image path that isn't local or doesn't live under that project's own folder.
 
 **If a project has no real photography yet:** leave `thumbnail`/`heroImage`/`gallery` undefined. `ProjectHero` automatically falls back to the same bold typographic treatment already used for every card in the homepage grid (the big split-word `.project-art` display) — this is the site's actual placeholder pattern, not a generic gray box, and it's what all three current projects use today.
 
 ### How to add a new portfolio project
 
-1. Add a new object to the `projects` array in `src/data/projects.ts`, following the `Project` type. Use the example below as a template.
-2. If you have real photos, drop them in `public/images/projects/[slug]/` and reference them in the `thumbnail`/`heroImage`/`gallery` fields. Otherwise leave those fields out entirely.
-3. Set `featured: true` if it should appear on the homepage.
-4. Run `npm run build` — the new `/work/[slug]` route generates automatically, no other file needs to change.
-
-### Example project entry
-
-```ts
-{
-  slug: "acme-relaunch",
-  title: "Acme Relaunch",
-  shortTitle: "Acme Relaunch",
-  category: "Brand identity",
-  services: ["Brand identity", "Packaging", "Web"],
-  summary: "A full brand relaunch for Acme, from logo to launch site.",
-  fullDescription:
-    "Acme needed a full identity relaunch that could carry across packaging, retail, and a new website. The project covered brand identity, packaging design, and a launch site built to match.",
-  client: "Acme Co.",       // only if confirmed real — omit otherwise
-  year: "2026",                    // only if confirmed real — omit otherwise
-  featured: true,
-  className: "project-red",          // project-red | project-dark | project-cream
-  stamp: "NEW DROP",
-  heroImage: {
-    src: "/images/projects/acme-relaunch/hero.jpg",
-    alt: "Acme product packaging on a retail shelf",
-  },
-  gallery: [
-    { src: "/images/projects/acme-relaunch/gallery-1.jpg", alt: "Acme logo system on black" },
-  ],
-  results: [
-    { label: "Sell-through increase", value: "18%" },  // only with real, confirmed numbers
-  ],
-  credits: [
-    { role: "Creative Direction", name: "Big Red Creative Productions" },
-  ],
-  seo: {
-    title: "Acme Relaunch — Brand Identity | Big Red Creative Productions",
-    description: "A full brand relaunch for Acme, from logo to launch site.",
-  },
-},
-```
+1. Open `src/data/project.template.ts` and copy `minimalProjectTemplate` (bare minimum) or `fullProjectTemplate` (every optional field shown) into the `projects` array in `src/data/projects.ts`.
+2. Fill in real fields only. Set `status: "draft"` while you're still working on it if you don't want it public yet.
+3. If you have real photos, drop them in `public/images/projects/[slug]/` and reference them with `projectImagePath(slug, filename)`. Otherwise leave those fields out entirely.
+4. Set `featured: true` if it should appear on the homepage (remove/flip `status` to publish it, or leave `status: "draft"` until it's ready).
+5. Run `npm run build` — the new `/work/[slug]` route, its metadata, its category filter button, and Previous/Next links all generate automatically. No other file needs to change. If something's wrong with the data, the build will fail and list exactly what.
 
 ## Rules for creating new components
 

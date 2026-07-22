@@ -7,10 +7,11 @@ import ProjectDetails from "@/components/ProjectDetails";
 import ProjectGallery from "@/components/ProjectGallery";
 import ProjectResults from "@/components/ProjectResults";
 import ProjectNavigation from "@/components/ProjectNavigation";
-import { projects, getProjectBySlug, getAdjacentProjects } from "@/data/projects";
+import { getPublishedProjects, getProjectBySlug, getAdjacentProjects } from "@/data/projects";
 
 // Only the slugs returned by generateStaticParams are valid — anything else
-// 404s instead of attempting an on-demand render.
+// 404s instead of attempting an on-demand render. Draft projects are
+// excluded here, so their slugs never generate a public route.
 export const dynamicParams = false;
 
 type ProjectPageProps = {
@@ -18,7 +19,7 @@ type ProjectPageProps = {
 };
 
 export function generateStaticParams() {
-  return projects.map((project) => ({ slug: project.slug }));
+  return getPublishedProjects().map((project) => ({ slug: project.slug }));
 }
 
 export async function generateMetadata({ params }: ProjectPageProps): Promise<Metadata> {

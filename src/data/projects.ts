@@ -1,3 +1,27 @@
+import { validateProjects } from "./projects.validate";
+
+export const PROJECT_CATEGORIES = [
+  "Branding",
+  "Packaging",
+  "Print Production",
+  "Events",
+  "Promotions",
+  "Web Design",
+  "Graphic Design",
+] as const;
+
+export type ProjectCategory = (typeof PROJECT_CATEGORIES)[number];
+
+export const PROJECT_STATUSES = ["published", "draft"] as const;
+
+export type ProjectStatus = (typeof PROJECT_STATUSES)[number];
+
+// The homepage grid is designed around this many cards. Mark more than this
+// many projects as featured to build a rotation — only the first
+// MAX_FEATURED_PROJECTS, in their array order, actually render on the
+// homepage, so the layout never breaks no matter how many are flagged.
+export const MAX_FEATURED_PROJECTS = 3;
+
 export type ProjectImage = {
   src: string;
   alt: string;
@@ -24,7 +48,7 @@ export type Project = {
   // Short form used in compact UI (prev/next navigation). Defaults to the
   // full title for projects whose title is already short.
   shortTitle: string;
-  category: string;
+  category: ProjectCategory;
   services: string[];
   summary: string;
   fullDescription: string;
@@ -33,6 +57,9 @@ export type Project = {
   client?: string;
   year?: string;
   featured: boolean;
+  // Draft projects stay in this file for prep but are excluded from the
+  // homepage, static routes, and prev/next navigation. Omitted = published.
+  status?: ProjectStatus;
   // Visual variant + ticket-stub badge used by the homepage ProjectCard.
   className: string;
   stamp: string;
@@ -56,7 +83,7 @@ export const projects: Project[] = [
     slug: "sp-juices",
     title: "SP Juices",
     shortTitle: "SP Juices",
-    category: "Brand identity",
+    category: "Branding",
     services: ["Brand identity", "Packaging", "Print"],
     summary:
       "A loud, flavor-forward juice identity across labels, menus and promotional art.",
@@ -75,7 +102,7 @@ export const projects: Project[] = [
     slug: "crash-the-stove",
     title: "Crash The Stove",
     shortTitle: "Crash The Stove",
-    category: "Event identity",
+    category: "Events",
     services: ["Event identity", "Promotions", "Production"],
     summary:
       "A culture-first event campaign spanning artist promotion, vendor communication and live-event graphics.",
@@ -94,7 +121,7 @@ export const projects: Project[] = [
     slug: "product-packaging",
     title: "Product Packaging",
     shortTitle: "Product Packaging",
-    category: "Creative direction",
+    category: "Packaging",
     services: ["Creative direction", "Labels", "Finishing"],
     summary:
       "High-impact packaging systems designed for shelf presence, brand recall and production readiness.",
@@ -111,28 +138,56 @@ export const projects: Project[] = [
   },
 ];
 
+// Fails loudly (build or dev server) with every problem listed at once if
+// project data is invalid — see src/data/projects.validate.ts.
+validateProjects(projects, {
+  validCategories: PROJECT_CATEGORIES,
+  validStatuses: PROJECT_STATUSES,
+});
+
+// Builds the conventional path for a project image — see
+// public/images/projects/[slug]/ in CLAUDE.md. Does not touch the file
+// system; it only builds the string a real, already-placed file should live
+// at.
+export function projectImagePath(slug: string, filename: string): string {
+  return `/images/projects/${slug}/${filename}`;
+}
+
+export function isPublished(project: Project): boolean {
+  return project.status !== "draft";
+}
+
+// The only project list that's safe to expose publicly. Draft projects are
+// excluded from every public-facing lookup below.
+export function getPublishedProjects(): Project[] {
+  return projects.filter(isPublished);
+}
+
 export function projectHref(slug: string): string {
   return `/work/${slug}`;
 }
 
 export function getProjectBySlug(slug: string): Project | undefined {
-  return projects.find((project) => project.slug === slug);
+  return getPublishedProjects().find((project) => project.slug === slug);
 }
 
 export function getFeaturedProjects(): Project[] {
-  return projects.filter((project) => project.featured);
+  return getPublishedProjects()
+    .filter((project) => project.featured)
+    .slice(0, MAX_FEATURED_PROJECTS);
 }
 
 export function getAdjacentProjects(slug: string): {
   previous?: Project;
   next?: Project;
 } {
-  const index = projects.findIndex((project) => project.slug === slug);
-  if (index === -1 || projects.length <= 1) {
+  const published = getPublishedProjects();
+  const index = published.findIndex((project) => project.slug === slug);
+  if (index === -1 || published.length <= 1) {
     return {};
   }
   return {
-    previous: projects[(index - 1 + projects.length) % projects.length],
-    next: projects[(index + 1) % projects.length],
+    previous: published[(index - 1 + published.length) % published.length],
+    next: published[(index + 1) % published.length],
   };
 }
