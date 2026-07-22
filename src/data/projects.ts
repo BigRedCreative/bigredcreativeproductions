@@ -84,18 +84,34 @@ export const projects: Project[] = [
     title: "SP Juices",
     shortTitle: "SP Juices",
     category: "Branding",
-    services: ["Brand identity", "Packaging", "Print"],
+    services: [
+      "Brand identity development",
+      "Logo design",
+      "Packaging design",
+      "Juice label design",
+      "Menu design",
+      "Print-production preparation",
+      "Product-line visual system",
+    ],
     summary:
-      "A loud, flavor-forward juice identity across labels, menus and promotional art.",
+      "A bold, urban brand identity and packaging system created for SP Juices, combining premium juice branding with 1990s hip-hop, comic-book, graffiti, and streetwear influences.",
     fullDescription:
-      "SP Juices needed a brand identity loud enough to match the flavor of the product — built to work across bottle labels, menu boards and promotional art without losing clarity at any size. The project covered brand identity, packaging design and print production, giving the line a consistent, shelf-ready look across every touchpoint.",
+      "SP Juices needed a brand identity and juice label system that could grow across an expanding lineup of fresh juice products while keeping every flavor distinct — energetic, urban, handmade, and culturally authentic rather than generic, corporate, or typical of a health-drink brand. The design direction centers on a bold white \"SP\" monogram, glossy dripping \"JUICES\" lettering inspired by fruit concentrate and rosin, thick comic-style outlines, high-impact typography, and an individual color palette for each flavor, mixing 1990s hip-hop, graffiti, streetwear, and comic-book influences with modern packaging design. The engagement covered brand identity development, logo design, packaging design, juice label design, menu design, print-production preparation, and a product-line visual system, with deliverables including the SP Juices logo and monogram, individual label designs for vertical 12 oz bottle formats, flavor-specific color systems, print-ready label artwork, a juice menu, product naming and visual hierarchy, and packaging graphics prepared for production. The product lineup developed during the project includes Soul Replenish, Soul Cleanse, Soul Power, Soul Rejuvenation, Soul Glo, Soul Nourish, Soul Bomb, Soul Revival, Seeded Souls, Mortal Soul, Soul Charge, Soul Reaper, and Soul Reboot, with ingredient combinations confirmed for several flavors: Soul Revival (Asian pear, apple, passionfruit, lemon, ginger, burdock root), Soul Cleanse (kale, cilantro, parsley, cucumber, pineapple, lemon with skin, Granny Smith apple, ginger, burdock root), Soul Nourish (yellow watermelon, pineapple, strawberry, apple, lemon, raspberry), Soul Glo (seeded red watermelon, raspberry, strawberry, lemon, pineapple, apple), Soul Replenish (soursop, raspberry, mango, apple, pineapple), Mortal Soul (jackfruit, pineapple, apple), and Seeded Souls (seeded watermelon, blackberry, plums, pineapple, lemon, apple). The system was created to give SP Juices a consistent, recognizable identity across labels, menus, promotional graphics, and future product releases while letting each juice keep its own personality and color identity.",
+    client: "SP Juices",
+    year: "2026",
     featured: true,
     className: "project-red",
     stamp: "FRESH DROP",
+    credits: [
+      {
+        role: "Creative Direction, Branding, Graphic Design, Packaging Design, Print-Production Artwork",
+        name: "Big Red Creative Productions",
+      },
+    ],
     seo: {
-      title: "SP Juices — Brand Identity & Packaging | Big Red Creative Productions",
+      title: "SP Juices Branding and Packaging Design | Big Red Creative Productions",
       description:
-        "A loud, flavor-forward juice identity across labels, menus and promotional art.",
+        "Explore the SP Juices branding and packaging system created by Big Red Creative Productions, featuring bold urban identity design, colorful juice labels, and print-ready product graphics.",
     },
   },
   {
