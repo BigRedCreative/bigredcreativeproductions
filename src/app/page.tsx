@@ -9,21 +9,22 @@ import Studio from "@/components/Studio";
 import Process from "@/components/Process";
 import ContactForm from "@/components/ContactForm";
 import Footer from "@/components/Footer";
+import { isSectionEnabled } from "@/config/sections";
 
 export default function Home() {
   return (
     <main>
-      <Header />
-      <Hero />
-      <Ticker />
-      <Manifesto />
-      <Services />
-      <Statement />
-      <Portfolio />
-      <Studio />
-      <Process />
-      <ContactForm />
-      <Footer />
+      {isSectionEnabled("header") && <Header />}
+      {isSectionEnabled("hero") && <Hero />}
+      {isSectionEnabled("ticker") && <Ticker />}
+      {isSectionEnabled("manifesto") && <Manifesto />}
+      {isSectionEnabled("services") && <Services />}
+      {isSectionEnabled("statement") && <Statement />}
+      {isSectionEnabled("portfolio") && <Portfolio />}
+      {isSectionEnabled("studio") && <Studio />}
+      {isSectionEnabled("process") && <Process />}
+      {isSectionEnabled("contact") && <ContactForm />}
+      {isSectionEnabled("footer") && <Footer />}
     </main>
   );
 }

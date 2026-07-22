@@ -1,12 +1,13 @@
 import Image from "next/image";
 import { siteConfig } from "@/config/site";
+import { sectionAnchors } from "@/config/sections";
 import { primaryNav, headerCta } from "@/data/navigation";
 import Button from "./ui/Button";
 
 export default function Header() {
   return (
     <header className="site-header">
-      <a className="logo" href="#top" aria-label={`${siteConfig.name} home`}>
+      <a className="logo" href={`#${sectionAnchors.hero}`} aria-label={`${siteConfig.name} home`}>
         <Image
           src="/brand/logo-horizontal.svg"
           alt={siteConfig.name}

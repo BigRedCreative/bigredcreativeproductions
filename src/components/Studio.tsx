@@ -1,29 +1,25 @@
 import { siteConfig } from "@/config/site";
+import { sectionAnchors } from "@/config/sections";
+import { studio } from "@/data/homepage";
 import SectionHeading from "./ui/SectionHeading";
 
 export default function Studio() {
   return (
-    <section className="studio section" id="studio">
+    <section className="studio section" id={sectionAnchors.studio}>
       <SectionHeading
         wrapperClassName="studio-title"
-        kicker="The studio"
-        heading="One team. One vision. Every touchpoint connected."
+        kicker={studio.kicker}
+        heading={studio.heading}
       />
       <div className="studio-copy">
         <p>
-          {siteConfig.name} works with entrepreneurs, artists, product
-          brands, venues and event organizers that need more than isolated
-          design files.
+          {siteConfig.name} {studio.introSuffix}
         </p>
-        <p>
-          We bring brand identity, physical production, campaign thinking and
-          live-event creative under one roof so the whole experience hits
-          with one voice.
-        </p>
+        <p>{studio.secondParagraph}</p>
         <div className="principles">
-          <span>Bold, never reckless.</span>
-          <span>Urban, never cliché.</span>
-          <span>Professional, never boring.</span>
+          {studio.principles.map((principle) => (
+            <span key={principle}>{principle}</span>
+          ))}
         </div>
       </div>
     </section>
