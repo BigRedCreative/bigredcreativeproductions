@@ -1,11 +1,10 @@
+import { manifesto } from "@/data/homepage";
+
 export default function Manifesto() {
   return (
     <section className="manifesto">
-      <div className="kicker">The mission</div>
-      <p>
-        We turn raw ideas into brands with presence—visual systems that feel
-        polished enough for the boardroom and real enough for the block.
-      </p>
+      <div className="kicker">{manifesto.kicker}</div>
+      <p>{manifesto.copy}</p>
     </section>
   );
 }

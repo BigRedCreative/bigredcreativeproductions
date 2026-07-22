@@ -1,14 +1,16 @@
 import { projects } from "@/data/projects";
+import { portfolioIntro } from "@/data/homepage";
+import { sectionAnchors } from "@/config/sections";
 import SectionHeading from "./ui/SectionHeading";
 import ProjectCard from "./ui/ProjectCard";
 
 export default function Portfolio() {
   return (
-    <section className="work section" id="work">
+    <section className="work section" id={sectionAnchors.portfolio}>
       <SectionHeading
         wrapperClassName="section-top"
-        kicker="Selected work"
-        heading="Made to stop the scroll and own the room."
+        kicker={portfolioIntro.kicker}
+        heading={portfolioIntro.heading}
       />
       <div className="project-grid">
         {projects.map((project, index) => (

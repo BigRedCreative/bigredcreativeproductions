@@ -1,5 +1,7 @@
 import Image from "next/image";
 import { siteConfig } from "@/config/site";
+import { sectionAnchors } from "@/config/sections";
+import { footer } from "@/data/homepage";
 
 export default function Footer() {
   return (
@@ -14,8 +16,8 @@ export default function Footer() {
       <a href={`mailto:${siteConfig.email}`}>{siteConfig.email}</a>
       <div className="footer-bottom">
         <span>{siteConfig.legalName}</span>
-        <span>Branding · Print · Promotions · Events</span>
-        <a href="#top">Back to top ↑</a>
+        <span>{footer.tagline}</span>
+        <a href={`#${sectionAnchors.hero}`}>{footer.backToTopLabel}</a>
       </div>
     </footer>
   );

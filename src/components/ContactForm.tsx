@@ -1,48 +1,43 @@
 import { siteConfig } from "@/config/site";
+import { sectionAnchors } from "@/config/sections";
+import { contact } from "@/data/homepage";
 import SectionHeading from "./ui/SectionHeading";
 import Button from "./ui/Button";
 
 export default function ContactForm() {
+  const { form } = contact;
   return (
-    <section className="contact grain" id="contact">
+    <section className="contact grain" id={sectionAnchors.contact}>
       <SectionHeading
-        kicker="Start a project"
-        heading="Let’s make noise."
-        description="Tell us what you’re building and where you need creative support."
+        kicker={contact.kicker}
+        heading={contact.heading}
+        description={contact.description}
       />
       <form action={`mailto:${siteConfig.email}`} method="post" encType="text/plain">
         <label>
-          Your name
-          <input name="name" required placeholder="Name or company" />
+          {form.nameLabel}
+          <input name="name" required placeholder={form.namePlaceholder} />
         </label>
         <label>
-          Email
-          <input name="email" type="email" required placeholder="you@company.com" />
+          {form.emailLabel}
+          <input name="email" type="email" required placeholder={form.emailPlaceholder} />
         </label>
         <label>
-          Service
+          {form.serviceLabel}
           <select name="service" defaultValue="">
             <option value="" disabled>
-              Select a service
+              {form.servicePlaceholder}
             </option>
-            <option>Branding</option>
-            <option>Packaging & Labels</option>
-            <option>Print Production</option>
-            <option>Promotions</option>
-            <option>Event Management</option>
-            <option>Website</option>
-            <option>Multiple Services</option>
+            {form.serviceOptions.map((option) => (
+              <option key={option}>{option}</option>
+            ))}
           </select>
         </label>
         <label>
-          Project details
-          <textarea
-            name="details"
-            required
-            placeholder="Tell us about the vision, timing and budget."
-          />
+          {form.detailsLabel}
+          <textarea name="details" required placeholder={form.detailsPlaceholder} />
         </label>
-        <Button type="submit">Send the vision ↗</Button>
+        <Button type="submit">{form.submitLabel}</Button>
       </form>
     </section>
   );
