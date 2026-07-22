@@ -20,11 +20,14 @@ src/
     page.tsx        — assembles homepage sections only, no content or business logic
     layout.tsx        — root HTML shell + metadata (sourced from config/site.ts)
     globals.css         — all CSS, plain stylesheet (no Tailwind/CSS Modules), design tokens in :root
+    work/[slug]/page.tsx — dynamic, statically-generated project detail pages (see "Portfolio system")
 
   components/
     Header.tsx, Hero.tsx, Ticker.tsx, Manifesto.tsx, Statement.tsx,
     Services.tsx, Portfolio.tsx, Studio.tsx, Process.tsx, ContactForm.tsx, Footer.tsx
       — one component per homepage section; presentation + structure only
+    ProjectHero.tsx, ProjectDetails.tsx, ProjectGallery.tsx, ProjectResults.tsx, ProjectNavigation.tsx
+      — sections used only on /work/[slug] project detail pages
 
   components/ui/
     Button.tsx, SectionHeading.tsx, ProjectCard.tsx, ServiceCard.tsx, Badge.tsx
@@ -34,7 +37,7 @@ src/
     homepage.ts    — all homepage copy (hero, ticker, manifesto, statement, studio,
                        process, contact form labels, footer wording)
     services.ts      — the services list (title/description/tags)
-    projects.ts        — the portfolio/project list
+    projects.ts        — the full portfolio data model + helpers (see "Portfolio system" below)
     navigation.ts        — header nav links + CTA (hrefs derived from config/sections.ts)
 
   config/
@@ -54,6 +57,81 @@ src/
 - **Section order / anchor IDs / enabling-disabling a section** → `src/config/sections.ts`, then keep `src/app/page.tsx`'s JSX order in sync
 
 Most content edits should only ever touch `src/data/*.ts` or `src/config/*.ts` — not the component files.
+
+## Portfolio system
+
+Every project lives as one object in the `projects` array in `src/data/projects.ts`, typed by the `Project` interface defined at the top of that file. Adding a project to that array automatically:
+
+- generates a static page at `/work/[slug]` (via `generateStaticParams`)
+- generates that page's `<title>`/meta description (via `generateMetadata`, from the project's `seo` field)
+- adds it to the homepage "Selected work" grid, **if** `featured: true`
+- wires up Previous/Next navigation on every project's detail page, in array order (wraps around)
+
+### How featured projects are selected
+
+The homepage only renders projects where `featured: true` (see `getFeaturedProjects()` in `src/data/projects.ts`, used by `src/components/Portfolio.tsx`). A project with `featured: false` still gets its own `/work/[slug]` page and still appears in Previous/Next navigation — it just doesn't show up in the homepage grid. Use this to keep the homepage curated as the portfolio grows.
+
+### Rules against inventing project facts
+
+**Never invent a client name, year, result, or credit.** `client`, `year`, `results`, and `credits` are all optional fields — leave them `undefined` until you have the real, confirmed information. The same goes for `thumbnail`, `heroImage`, and `gallery`: if a real project photo doesn't exist yet, leave the image field undefined rather than pointing it at a placeholder/stock image. The UI already has a built-in fallback for this (see below) — it is not a gap that needs to be filled with a fake photo.
+
+### Where project images go
+
+```
+public/images/projects/[project-slug]/
+  hero.jpg          → heroImage
+  thumbnail.jpg       → thumbnail
+  gallery-1.jpg          → gallery[0]
+  gallery-2.jpg              → gallery[1]
+```
+
+Reference them from `src/data/projects.ts` as `/images/projects/[project-slug]/hero.jpg`, etc. (Next.js serves anything in `public/` from the site root.) All project images use `next/image`, and every image field is `{ src, alt }` — the type system will not let you add an image without alt text.
+
+**If a project has no real photography yet:** leave `thumbnail`/`heroImage`/`gallery` undefined. `ProjectHero` automatically falls back to the same bold typographic treatment already used for every card in the homepage grid (the big split-word `.project-art` display) — this is the site's actual placeholder pattern, not a generic gray box, and it's what all three current projects use today.
+
+### How to add a new portfolio project
+
+1. Add a new object to the `projects` array in `src/data/projects.ts`, following the `Project` type. Use the example below as a template.
+2. If you have real photos, drop them in `public/images/projects/[slug]/` and reference them in the `thumbnail`/`heroImage`/`gallery` fields. Otherwise leave those fields out entirely.
+3. Set `featured: true` if it should appear on the homepage.
+4. Run `npm run build` — the new `/work/[slug]` route generates automatically, no other file needs to change.
+
+### Example project entry
+
+```ts
+{
+  slug: "acme-relaunch",
+  title: "Acme Relaunch",
+  shortTitle: "Acme Relaunch",
+  category: "Brand identity",
+  services: ["Brand identity", "Packaging", "Web"],
+  summary: "A full brand relaunch for Acme, from logo to launch site.",
+  fullDescription:
+    "Acme needed a full identity relaunch that could carry across packaging, retail, and a new website. The project covered brand identity, packaging design, and a launch site built to match.",
+  client: "Acme Co.",       // only if confirmed real — omit otherwise
+  year: "2026",                    // only if confirmed real — omit otherwise
+  featured: true,
+  className: "project-red",          // project-red | project-dark | project-cream
+  stamp: "NEW DROP",
+  heroImage: {
+    src: "/images/projects/acme-relaunch/hero.jpg",
+    alt: "Acme product packaging on a retail shelf",
+  },
+  gallery: [
+    { src: "/images/projects/acme-relaunch/gallery-1.jpg", alt: "Acme logo system on black" },
+  ],
+  results: [
+    { label: "Sell-through increase", value: "18%" },  // only with real, confirmed numbers
+  ],
+  credits: [
+    { role: "Creative Direction", name: "Big Red Creative Productions" },
+  ],
+  seo: {
+    title: "Acme Relaunch — Brand Identity | Big Red Creative Productions",
+    description: "A full brand relaunch for Acme, from logo to launch site.",
+  },
+},
+```
 
 ## Rules for creating new components
 
