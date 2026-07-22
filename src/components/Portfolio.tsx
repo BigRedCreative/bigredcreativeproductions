@@ -2,7 +2,7 @@ import { getFeaturedProjects } from "@/data/projects";
 import { portfolioIntro } from "@/data/homepage";
 import { sectionAnchors } from "@/config/sections";
 import SectionHeading from "./ui/SectionHeading";
-import ProjectCard from "./ui/ProjectCard";
+import PortfolioGrid from "./PortfolioGrid";
 
 export default function Portfolio() {
   const featuredProjects = getFeaturedProjects();
@@ -13,11 +13,7 @@ export default function Portfolio() {
         kicker={portfolioIntro.kicker}
         heading={portfolioIntro.heading}
       />
-      <div className="project-grid">
-        {featuredProjects.map((project, index) => (
-          <ProjectCard key={project.title} project={project} index={index} />
-        ))}
-      </div>
+      <PortfolioGrid projects={featuredProjects} />
     </section>
   );
 }
