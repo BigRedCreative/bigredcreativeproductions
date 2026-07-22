@@ -1,10 +1,11 @@
-import { projects } from "@/data/projects";
+import { getFeaturedProjects } from "@/data/projects";
 import { portfolioIntro } from "@/data/homepage";
 import { sectionAnchors } from "@/config/sections";
 import SectionHeading from "./ui/SectionHeading";
 import ProjectCard from "./ui/ProjectCard";
 
 export default function Portfolio() {
+  const featuredProjects = getFeaturedProjects();
   return (
     <section className="work section" id={sectionAnchors.portfolio}>
       <SectionHeading
@@ -13,7 +14,7 @@ export default function Portfolio() {
         heading={portfolioIntro.heading}
       />
       <div className="project-grid">
-        {projects.map((project, index) => (
+        {featuredProjects.map((project, index) => (
           <ProjectCard key={project.title} project={project} index={index} />
         ))}
       </div>

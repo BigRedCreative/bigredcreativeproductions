@@ -1,31 +1,138 @@
+export type ProjectImage = {
+  src: string;
+  alt: string;
+};
+
+export type ProjectResult = {
+  label: string;
+  value: string;
+};
+
+export type ProjectCredit = {
+  role: string;
+  name: string;
+};
+
+export type ProjectExternalLink = {
+  label: string;
+  url: string;
+};
+
 export type Project = {
+  slug: string;
   title: string;
-  type: string;
-  copy: string;
+  // Short form used in compact UI (prev/next navigation). Defaults to the
+  // full title for projects whose title is already short.
+  shortTitle: string;
+  category: string;
+  services: string[];
+  summary: string;
+  fullDescription: string;
+  // Only fill these in with real, confirmed information — never invent a
+  // client name, date, result, or credit. Leave undefined until known.
+  client?: string;
+  year?: string;
+  featured: boolean;
+  // Visual variant + ticket-stub badge used by the homepage ProjectCard.
   className: string;
   stamp: string;
+  // No project photography exists yet. Leave these undefined and the UI
+  // falls back to the site's existing typographic card treatment — do not
+  // fill these with placeholder/stock images.
+  thumbnail?: ProjectImage;
+  heroImage?: ProjectImage;
+  gallery?: ProjectImage[];
+  externalLink?: ProjectExternalLink;
+  results?: ProjectResult[];
+  credits?: ProjectCredit[];
+  seo: {
+    title: string;
+    description: string;
+  };
 };
 
 export const projects: Project[] = [
   {
+    slug: "sp-juices",
     title: "SP Juices",
-    type: "Brand identity · Packaging · Print",
-    copy: "A loud, flavor-forward juice identity across labels, menus and promotional art.",
+    shortTitle: "SP Juices",
+    category: "Brand identity",
+    services: ["Brand identity", "Packaging", "Print"],
+    summary:
+      "A loud, flavor-forward juice identity across labels, menus and promotional art.",
+    fullDescription:
+      "SP Juices needed a brand identity loud enough to match the flavor of the product — built to work across bottle labels, menu boards and promotional art without losing clarity at any size. The project covered brand identity, packaging design and print production, giving the line a consistent, shelf-ready look across every touchpoint.",
+    featured: true,
     className: "project-red",
     stamp: "FRESH DROP",
+    seo: {
+      title: "SP Juices — Brand Identity & Packaging | Big Red Creative Productions",
+      description:
+        "A loud, flavor-forward juice identity across labels, menus and promotional art.",
+    },
   },
   {
+    slug: "crash-the-stove",
     title: "Crash The Stove",
-    type: "Event identity · Promotions · Production",
-    copy: "A culture-first event campaign spanning artist promotion, vendor communication and live-event graphics.",
+    shortTitle: "Crash The Stove",
+    category: "Event identity",
+    services: ["Event identity", "Promotions", "Production"],
+    summary:
+      "A culture-first event campaign spanning artist promotion, vendor communication and live-event graphics.",
+    fullDescription:
+      "Crash The Stove called for a culture-first event campaign that could carry artist promotion, vendor communication and live-event graphics under one identity. The work spanned event identity, promotions and production, keeping the visual language consistent from the first announcement through day-of signage.",
+    featured: true,
     className: "project-dark",
     stamp: "LIVE CULTURE",
+    seo: {
+      title: "Crash The Stove — Event Identity & Promotions | Big Red Creative Productions",
+      description:
+        "A culture-first event campaign spanning artist promotion, vendor communication and live-event graphics.",
+    },
   },
   {
+    slug: "product-packaging",
     title: "Product Packaging",
-    type: "Creative direction · Labels · Finishing",
-    copy: "High-impact packaging systems designed for shelf presence, brand recall and production readiness.",
+    shortTitle: "Product Packaging",
+    category: "Creative direction",
+    services: ["Creative direction", "Labels", "Finishing"],
+    summary:
+      "High-impact packaging systems designed for shelf presence, brand recall and production readiness.",
+    fullDescription:
+      "This packaging system was built for shelf presence and brand recall first, with creative direction, label design and production finishing handled to keep every piece print-ready. The result is a packaging system designed to hold up under real production constraints while still standing out on the shelf.",
+    featured: true,
     className: "project-cream",
     stamp: "BUILT TO MOVE",
+    seo: {
+      title: "Product Packaging — Creative Direction & Labels | Big Red Creative Productions",
+      description:
+        "High-impact packaging systems designed for shelf presence, brand recall and production readiness.",
+    },
   },
 ];
+
+export function projectHref(slug: string): string {
+  return `/work/${slug}`;
+}
+
+export function getProjectBySlug(slug: string): Project | undefined {
+  return projects.find((project) => project.slug === slug);
+}
+
+export function getFeaturedProjects(): Project[] {
+  return projects.filter((project) => project.featured);
+}
+
+export function getAdjacentProjects(slug: string): {
+  previous?: Project;
+  next?: Project;
+} {
+  const index = projects.findIndex((project) => project.slug === slug);
+  if (index === -1 || projects.length <= 1) {
+    return {};
+  }
+  return {
+    previous: projects[(index - 1 + projects.length) % projects.length],
+    next: projects[(index + 1) % projects.length],
+  };
+}
