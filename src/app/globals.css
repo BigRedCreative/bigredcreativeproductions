@@ -379,12 +379,17 @@ footer>a{display:inline-block;font-size:clamp(30px,5vw,72px);letter-spacing:-.05
   text-align:center;transition:var(--duration-fast)
 }
 .checkout-submit-button:hover{background:var(--red);border-color:var(--red)}
+.checkout-submit-button:disabled,.checkout-secondary-button:disabled{opacity:.5;cursor:not-allowed}
+.checkout-submit-button:disabled:hover{background:var(--black);border-color:var(--black)}
 .checkout-secondary-button{
   display:inline-block;border:var(--border-width-heavy) solid var(--black);background:transparent;color:var(--black);
   padding:18px 26px;text-transform:uppercase;letter-spacing:.14em;font-size:11px;font-weight:900;cursor:pointer;transition:var(--duration-fast)
 }
 .checkout-secondary-button:hover{background:var(--black);color:white}
 .checkout-review-actions{display:flex;gap:16px;margin-top:30px;flex-wrap:wrap}
+.checkout-submit-error{border:var(--border-width) solid var(--red);padding:16px 20px;margin:20px 0 0;color:var(--red);font-weight:700}
+.checkout-fallback-note{margin-top:16px;font-size:13px;color:#777}
+.checkout-fallback-note a{color:var(--black);text-decoration:underline}
 .order-review{display:grid;grid-template-columns:1.6fr 1fr;gap:6vw;align-items:start;margin-top:20px}
 .order-review-lines{display:flex;flex-direction:column;border-top:var(--border-width) solid var(--black)}
 .order-review-line{display:grid;grid-template-columns:2fr auto;gap:24px;align-items:center;padding:28px 0;border-bottom:var(--border-width) solid var(--black)}
@@ -393,10 +398,6 @@ footer>a{display:inline-block;font-size:clamp(30px,5vw,72px);letter-spacing:-.05
 .order-review-summary{position:static}
 .checkout-submitted-heading{font-size:clamp(28px,3.5vw,42px);text-transform:uppercase;letter-spacing:-.03em;font-weight:900;margin:0 0 16px}
 .checkout-submitted-warning{font-weight:800;color:var(--red)}
-.checkout-submitted-summary{
-  width:100%;margin:20px 0;padding:16px;border:var(--border-width) solid rgba(11,11,11,.3);
-  font-size:13px;line-height:1.6;font-family:inherit;color:var(--black);background:transparent;min-height:220px;resize:vertical
-}
 @media(max-width:900px){
   .order-review{grid-template-columns:1fr}
   .order-review-line{grid-template-columns:1fr}

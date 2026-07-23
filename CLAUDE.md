@@ -25,6 +25,7 @@ src/
     store/[slug]/page.tsx — dynamic, statically-generated product detail pages (see "Store (storefront UI)")
     cart/page.tsx        — the /cart route (see "Cart (transactional foundation)")
     checkout/page.tsx      — the /checkout route (see "Checkout + Order foundation")
+    api/orders/route.ts     — POST /api/orders Route Handler, see "Backend + database foundation"
 
   components/
     Header.tsx, Hero.tsx, Ticker.tsx, Manifesto.tsx, Statement.tsx,
@@ -82,7 +83,20 @@ src/
     site.ts     — business identity: name, legal name, url, email, location, social links
     theme.ts      — TypeScript mirror of the CSS design tokens in globals.css
     sections.ts     — homepage section order, anchor IDs, enabled/disabled flags
+
+  db/
+    schema.ts   — Drizzle table/sequence definitions (products, customers, orders, order_lines,
+                   order_number_seq) — see "Backend + database foundation"
+    index.ts      — getDb(): lazy, server-only Neon/Drizzle client, throws only when actually called
+
+  server/
+    product-source.ts     — getAuthoritativeProduct(): the one swappable product-lookup boundary
+    verify-configuration.ts — strict server-side package/option/add-on verification for API requests
+    create-order.ts       — the atomic Customer+Order+OrderLine transaction, idempotency handling
 ```
+
+drizzle.config.ts (project root) and drizzle/ (generated, versioned migration SQL) are Drizzle Kit's
+CLI-only files — see "Backend + database foundation" → "Database migrations".
 
 ## Where to edit things
 
@@ -483,7 +497,7 @@ A small client component, `CartNavLink`, renders `Cart (N)` (N = summed quantity
 
 ## Checkout + Order foundation
 
-**Status: a real checkout flow that ends in a "prepare an order request, hand off by email" step. Still no payment collection, no permanent order storage, no order numbers, no customer accounts, no admin.** This is the layer between the cart above and a real future Order system.
+**Status: a real checkout flow backed by a durable database order path — see "Backend + database foundation" below for the full server-side architecture.** Orders are now permanently stored with real, human-readable `BRCP-####` order numbers. Still no payment collection, no customer accounts, no admin. This section documents the checkout UI and the `OrderDraft`/`OrderLine` client-side value objects; the section below documents what actually persists them.
 
 ### Core principle: Cart is mutable, Order data is frozen
 
@@ -527,11 +541,11 @@ const ORDER_STATUSES = ["draft", "submitted", "needs-review", "confirmed", "canc
 
 No `paid`/`fulfilled`/`refunded` states exist yet — those belong to a future payment phase. `buildOrderDraft(items, customer, notes)` in `orders.ts` is the single place a `CartItem[]` + customer input becomes an `OrderDraft`, and it decides `status` itself: **any `starting-price` line makes the whole draft `"needs-review"` instead of `"submitted"`** — an unresolved estimate must never be presented as a confirmed, ready request. `OrderDraft` also carries `id` (permanent, `crypto.randomUUID()`), `createdAt`/`updatedAt`, `customer` (`OrderCustomer`), optional `billingAddress`/`shippingAddress` (`OrderAddress` — typed now, collected by **no** Phase 10 UI), `lines`, `pricingSummary` (`{ subtotal, depositDue, hasEstimatedPricing }`, all frozen at build time), and optional `notes`.
 
-**What "submitted" actually means in this phase:** it means the checkout request was prepared for the temporary email handoff below — **not** permanently stored, not paid, not confirmed, not accepted by Big Red Creative Productions. The UI is written to never imply otherwise (see "Honest wording" below).
+**What "submitted"/"needs-review" mean today:** the client-side `OrderDraft` built by `buildOrderDraft()` is a **preview only** — what actually determines the persisted order's status is the server, which independently recomputes the same decision from server-verified data (see "Backend + database foundation" below). Once `POST /api/orders` returns success, the order is genuinely, permanently stored with a real order number, and the UI says so plainly ("Order BRCP-#### received" — see "Honest wording," updated below).
 
-### No `orderNumber` yet — deliberately
+### Order numbers — now real, generated server-side
 
-Only the permanent `id` (UUID) exists. A human-readable order number is deliberately **not** stubbed onto the type, even as an always-undefined optional field (unlike `billingAddress`/`shippingAddress`, which have a stable shape even though unused) — generating one safely requires a single server-side coordinating source of truth to guarantee uniqueness, and its real format (sequential? date-prefixed?) isn't decided yet. Never derive an order number from a timestamp, email, or client-side counter when this is eventually built.
+`OrderDraft.id` (the permanent UUID) is still the value this client-side layer works with — `orders.ts` has no knowledge of the human-readable order number at all, and still never derives one from a timestamp, email, or client-side counter. The real `BRCP-####` number is generated server-side by a Postgres sequence at persistence time and only reaches the client in `POST /api/orders`'s response — see "Order numbering" under "Backend + database foundation" below.
 
 ### Customer fields
 
@@ -565,25 +579,25 @@ Exactly mirrors the cart: `OrderLine.depositAmount` and `OrderPricingSummary.dep
 
 A dedicated component, not a reuse of `CartItemRow` (which carries live quantity/remove controls wired to `useCart()` — the wrong affordances for a historical review). It renders exclusively from `OrderDraft.lines`: title, package/options/add-ons, quantity, line subtotal (estimate-labeled when applicable), deposit context, and the order-level pricing summary — no live `Product` lookup anywhere in it.
 
-### The temporary mailto handoff — and why
+### Submission — `POST /api/orders` is primary, mailto is now a secondary fallback
 
-Phase 10 has no server, and transactional email is explicitly out of scope, so "Submit Order Request" can't honestly claim to deliver anywhere on its own. Rather than inventing a new fake "submitted" state, it reuses the site's **existing** no-backend submission mechanism — the same `mailto:` pattern `ContactForm.tsx` already relies on in production. Clicking "Submit Order Request" (a real `<a href="mailto:...">`, not a JS redirect — inspectable, right-click-able, keyboard-operable) opens the customer's email client with a structured plain-text summary (`buildOrderRequestSummary()` in `orders.ts`) addressed to `siteConfig.email`, containing customer info, every line's configuration and pricing, the order-level summary, estimate/deposit context, notes, and the draft's UUID for reference — deliberately **no** browser/system information.
+`CheckoutView`'s "review" step submits by calling `POST /api/orders` (a real `fetch`, not a link) with the raw cart configuration — see "Server order creation" under "Backend + database foundation" below for what happens server-side. A persistent, always-visible secondary link — *"Prefer email? You can send this request to [email] instead"* — reuses the same `mailto:` mechanism `ContactForm.tsx` and Phase 10's checkout relied on (`buildOrderRequestMailto()` in `orders.ts`, built from the client-side preview draft), so a customer always has a way to reach the business even if the API call fails. On a failed submission, the error message explicitly points at this fallback.
 
 ### Honest wording — no false confirmation, ever
 
-Opening a mail client does not prove an email was sent. The `"submitted"` screen never says "Order submitted successfully," "Order received," or "We got your order" — it says **"Your order request has been prepared"** and **"Your email app should open with the request filled in. Please send the email to complete your request,"** plus an explicit **"No payment has been collected and this request is not yet stored in our order system."** A fallback is always shown alongside: the visible business email address (linked and as plain text) with the draft's reference id, and a read-only `<textarea>` containing the exact plain-text summary so a customer can copy it manually if their email client never opened.
+The `"submitted"` step is now only ever reached after a real `201` response from `POST /api/orders` — it displays the actual returned order number ("Order BRCP-#### received"), tells the customer what email they'll be contacted at, and still states plainly **"No payment has been collected yet."** A `"needs-review"` order additionally notes that starting-price items mean final pricing isn't confirmed yet. On failure, the error is shown inline, the cart/session are left untouched, and the mailto fallback is offered — never a fake success screen.
 
 ### Persistence — `sessionStorage`, deliberately different from the cart's `localStorage`
 
-`CheckoutView` persists `{ version, step, customer, notes, submittedDraft? }` to `sessionStorage` under a versioned envelope (`CHECKOUT_SCHEMA_VERSION`), using the exact same hydration-safe pattern as `CartProvider`: state starts at its deterministic default on both the server render and the first client render, a post-mount effect restores whatever was persisted, and a "skip the first persist run" ref guard (the same fix `CartProvider` uses) stops that restore from being immediately overwritten by stale initial state. Any shape mismatch, version mismatch, or parse failure discards the whole persisted state — logged via `console.warn`, never thrown. This is **session-scoped on purpose**, unlike the cart: an in-progress or already-submitted checkout shouldn't silently reappear days later the way the cart is meant to, and `sessionStorage` itself doesn't imply more permanence than actually exists. `checkoutReducer`, `isValidPersistedState`, and `loadPersistedCheckout` are exported from `CheckoutView.tsx` for the same reason `CartProvider`'s equivalents are — direct testability independent of React.
+`CheckoutView` persists `{ version, step, customer, notes, clientRequestId }` to `sessionStorage` under a versioned envelope (`CHECKOUT_SCHEMA_VERSION`), using the exact same hydration-safe pattern as `CartProvider`: state starts at its deterministic default on both the server render and the first client render, a post-mount effect restores whatever was persisted (minting a fresh `clientRequestId` via `crypto.randomUUID()` if none existed yet), and a "skip the first persist run" ref guard (the same fix `CartProvider` uses) stops that restore from being immediately overwritten by stale initial state. Any shape mismatch, version mismatch, or parse failure discards the whole persisted state — logged via `console.warn`, never thrown. This is **session-scoped on purpose**, unlike the cart: an in-progress checkout shouldn't silently reappear days later the way the cart is meant to. `clientRequestId` is the one thing that deliberately *does* need to survive a mid-checkout refresh — see "Idempotency" below for why. Once a real order is confirmed, the persisted draft is cleared entirely rather than kept around (there's no need to restore a "submitted" screen after a refresh — the order itself is now durably stored server-side, refresh or not). `checkoutReducer`, `isValidPersistedState`, and `loadPersistedCheckout` are exported from `CheckoutView.tsx` for the same reason `CartProvider`'s equivalents are — direct testability independent of React.
 
-### Cart clearing — still not done, on purpose
+### Cart clearing — now happens, but only after confirmed server success
 
-The cart is **not** cleared when `/checkout` opens, not on validation failure, not when the mailto link opens, and not once the `"submitted"` state appears — because none of those events are a confirmed server-side order. There's no reliable way to detect whether a customer actually sent the resulting email, either. Cart clearing is explicitly deferred to whenever a real backend confirms order creation in a later phase.
+The cart is **not** cleared when `/checkout` opens, not on validation failure, not while a submission is in flight, and not if `POST /api/orders` fails — only once the endpoint returns a real `201` with an order id/number does `CheckoutView` call `clearCart()` and wipe the persisted checkout draft. A failed or abandoned checkout always leaves the cart exactly as the customer left it.
 
-### Future server/database boundary
+### What's still not built
 
-The following explicitly require a real backend and are not faked client-side anywhere in this codebase: permanent order creation and durable storage, human-readable `orderNumber` generation, customer records, secure order-status transitions (only staff should ever move a draft to `"confirmed"` — a client can't honestly enforce that), transactional email delivery, payment sessions, admin retrieval, and any real server acknowledgement that an order exists. Cart clearing after a confirmed order is on this same list.
+The following still require work beyond this phase and are not faked anywhere in this codebase: customer accounts/login, secure staff-only order-status transitions (moving an order to `"confirmed"` is not exposed anywhere), transactional email delivery (the mailto fallback is a real email client handoff, not a delivery guarantee), payment sessions, and admin retrieval/search of orders. See "Backend + database foundation" below for what *is* now real.
 
 ### Future admin panel (documentation only)
 
@@ -599,6 +613,154 @@ The long-term system separates:
 - **Obsidian Vault** — a separate, private business-knowledge source.
 
 Customer email, phone, address, order history, payment information, and private intake responses must never automatically become public-facing AI context. No AI or Obsidian integration exists in this codebase yet.
+
+## Backend + database foundation
+
+**Status: a real, durable order-persistence backend, live-tested against a real Neon database. Still no payments, no customer accounts/login, no admin dashboard UI, no file uploads, no transactional email service, no intake forms, no rate limiting.** This is the server-side layer beneath the checkout UI documented above — nothing in this section changes what a shopper sees; it documents what actually happens once "Submit Order Request" is clicked.
+
+### 1. Database stack
+
+- **Neon PostgreSQL** — a pooled connection (`DATABASE_URL`) for normal application queries and a direct/unpooled connection (`DATABASE_URL_UNPOOLED`) for migration tooling.
+- **Drizzle ORM**, specifically `drizzle-orm/neon-serverless` (not `neon-http`) — the plain HTTP driver can't run multi-statement transactions, and atomic Customer+Order+OrderLine creation requires a real `db.transaction()`. `neon-serverless` is WebSocket-backed (via the `ws` package) and supports it.
+- **Zod** at the `POST /api/orders` request boundary — the first phase in this codebase with a real, untrusted external payload, which is the specific justification for introducing a validation library only now rather than earlier.
+- **A Next.js Route Handler**, `src/app/api/orders/route.ts` (not a Server Action) — chosen so order creation has a normal HTTP request/response shape or general reuse.
+
+### 2. Database tables
+
+Defined in `src/db/schema.ts`, applied via versioned Drizzle migrations (see below):
+
+- **`products`** — mirrors the `Product` type field-for-field (JSONB for `pricing`/`seo`/`media`/`options`/`packages`/`addOns`, deliberately not normalized into separate tables — see "Authoritative product source" below for why this table currently holds **zero rows**).
+- **`customers`** — `firstName`, `lastName`, a normalized `email`, optional `phone`/`company`, timestamps. No password/auth fields — no accounts exist.
+- **`orders`** — permanent UUID `id`, human-readable `orderNumber`, `status`, FK to `customerId`, frozen `pricingSummary` JSONB, `notes`, `source` (`"checkout"` today), and `clientRequestId` (the idempotency key).
+- **`order_lines`** — FK to `orderId`, a `productId` reference field (see below), and a full frozen snapshot of everything needed to render the line without ever consulting live product data (see "Order snapshots").
+
+### 3. Order numbering
+
+Human-readable order numbers are generated by a real Postgres sequence, `order_number_seq` (`src/db/schema.ts`), starting at `1001` and incrementing by 1 — **never `SELECT MAX()+1`**, which is unsafe under concurrent inserts. `src/server/create-order.ts` calls `nextval('order_number_seq')` inside the same transaction that creates the order row and formats the result as `BRCP-####` (e.g. `BRCP-1001`). The order's permanent internal identity remains the UUID `id` — `orderNumber` is a separate, renameable-in-spirit, human-facing field, exactly mirroring the `id`/`slug` split already established for `Product`.
+
+### 4. Customer behavior
+
+`create-order.ts` matches customers by **normalized** email (`.trim().toLowerCase()`) — enforced at the database level too via the `customers_email_unique` index, so `"Jane.Doe@Example.com"` and `"  JANE.DOE@EXAMPLE.COM  "` resolve to the same row. A repeat order from a known email links to the **existing** customer rather than creating a duplicate. Matching is **non-destructive**: an existing customer's populated `phone`/`company` is never overwritten by a new order's values — only currently-blank fields get filled in. No passwords, no login, no accounts.
+
+### 5. Order snapshots — historical data is frozen, never recalculated
+
+Every `order_lines` row freezes, at creation time, everything needed to render that line correctly forever, independent of the live `Product`:
+
+`productId` (reference only, see below), `productSlug`, `productTitle`, `productType`, `purchaseMode`, `quantity`, `selectedPackage`, `selectedOptions`, `selectedAddOns`, `unitPrice`, `depositAmount`, and `lineSubtotal`.
+
+**A historical order must never be recalculated from live `Product` data.** If a product's price, title, or configuration changes — or the product is deleted entirely — every existing order line that referenced it keeps showing exactly what was true when the order was placed. This was directly verified during live testing (see "Live database testing" below): changing a test product's price after an order existed left that order's `unit_price` untouched, while a *new* order for the same product correctly picked up the new price.
+
+**`order_lines.product_id` — nullable reference, no active foreign-key constraint.** This column stores the `Product.id` value at order time, but it is a plain nullable `text` column with **no enforced foreign key to `products.id`**, unlike `order_lines.order_id → orders.id` and `orders.customer_id → customers.id`, which are real, enforced FKs. This is intentional, not an oversight: the live, authoritative product catalog is still `src/data/products.ts` (see "Authoritative product source" below), and the database's `products` table currently holds zero rows. A hard FK from `order_lines.product_id` to `products.id` would reject *every* real order, since no product it referenced would ever have a matching row to point to. A real FK may be added in a later phase once the storefront/catalog actually migrates to database-backed products — at that point `product_id` would gain a `references()` constraint via a new migration (see `drizzle/0001_amazing_hammerhead.sql`, which is what dropped this FK after it briefly existed in the first-generated migration). Until then, order history remains fully, independently renderable from the frozen snapshot fields alone — `product_id` is reference-only, never a rendering dependency.
+
+### 6. Idempotency
+
+`clientRequestId` (a UUID, generated once client-side via `crypto.randomUUID()` and persisted across a checkout session — see "Persistence" above) is the idempotency key. `orders.client_request_id` carries a real, persisted unique database constraint (`orders_client_request_id_unique`) — that constraint, not application logic, is the final authority. `create-order.ts` also does an optimistic pre-transaction lookup by `clientRequestId` as a fast path (avoids an unnecessary transaction on a plain retry), and separately catches a `23505` unique-violation on the insert itself and recovers by returning the order that already exists, in case two requests race past the fast-path check simultaneously. A duplicate submission — whether a page refresh, a double-click, or a retried request after a flaky network response — returns the **existing** order rather than creating a second one. This same pattern (a persisted, client-generated idempotency key with a database-level unique constraint as the source of truth) is exactly what a future payment/webhook integration will need, and nothing about this design is payment-specific — it's ready to be reused as-is.
+
+**Honesty about what was actually tested:** live testing exercised the **sequential** duplicate-submission path (the fast-path lookup) and confirmed it works correctly end-to-end. The **true simultaneous-race branch** — two requests hitting the unique-constraint catch inside the transaction at nearly the same instant — was not directly exercised, since that requires genuine concurrency that sequential test requests can't produce. The code path exists and was written specifically to handle that case, but it has not been live-verified under real concurrency.
+
+### 7. Server order creation — the full flow
+
+```
+Cart
+  → Checkout (review step)
+  → POST /api/orders
+  → Zod request validation (src/app/api/orders/route.ts)
+  → per line: resolve the authoritative product (src/server/product-source.ts)
+  → verify status is "published" and the product is cart-eligible
+  → verify the requested package/options/add-ons are real (src/server/verify-configuration.ts)
+  → recompute price server-side via buildCartItem() — the client never sends a price
+  → createOrder() (src/server/create-order.ts) — one database transaction:
+      → find-or-create customer (normalized email)
+      → generate the order number (order_number_seq)
+      → insert the order row
+      → insert the frozen order_lines rows
+  → response: { id, orderNumber, status }
+  → CheckoutView clears the cart and the checkout session draft
+    ONLY after this response confirms success
+```
+
+The client never computes or transmits a price at any point in this flow — only raw configuration (`productId`, `quantity`, `selectedPackageSlug`, `selectedOptionValues`, `selectedAddOnSlugs`). Every dollar amount that ends up on the order was computed server-side, in this request, from the authoritative product definition.
+
+### 8. Authoritative product source
+
+**Current:** `src/data/products.ts` (the same TypeScript catalog the public `/store` reads from).
+**Future:** the database `products` table, once a real content/admin workflow exists to populate it.
+
+`src/server/product-source.ts` exports one function, `getAuthoritativeProduct(productId)`, and is the **only** place order creation resolves "what is this product, really." It is deliberately `async` even though today's implementation (`getProductById()` from `products.ts`) is synchronous, specifically so the swap to a database query later requires changing this one function's body — not any of its callers, and not the request/response shape of `/api/orders`. Order creation must always go through this boundary, never reach directly into `products.ts` or the database `products` table itself. The database `products` table exists (see "Database tables" above) but is not populated with any real catalog data in this phase — it is schema-only, prepared for that future migration.
+
+### 9. Transactions
+
+Customer creation, order creation, and every order line are created **atomically**, inside a single `db.transaction()` in `src/server/create-order.ts`. A partial order — for example, an order row that exists with no corresponding order lines because a line insert failed — must never be left behind, and the code is structured so that's true even if the failure happens after the customer and order rows were already written within that same transaction.
+
+This was **live-verified**, not just asserted: a temporary, env-gated fault was injected between the order insert and the order-line insert, a real request was sent through the running server against the real Neon database, and the resulting failure was confirmed to leave **zero** trace — no customer row, no order row — for that attempt. The fault injection was removed immediately after the test; it does not exist in the shipped code.
+
+### 10. Database migrations
+
+Versioned, generated via `npx drizzle-kit generate` (or `npm run db:generate`), applied via `npm run db:migrate`:
+
+- **`drizzle/0000_lame_gwen_stacy.sql`** — the initial schema: `order_number_seq`, `products`, `customers`, `orders`, `order_lines`, all three unique indexes, and (at the time) a foreign key from `order_lines.product_id` to `products.id`.
+- **`drizzle/0001_amazing_hammerhead.sql`** — a single-statement follow-up migration, `ALTER TABLE "order_lines" DROP CONSTRAINT "order_lines_product_id_products_id_fk"`, applied to fix the issue described under "Order snapshots" above (that FK would have rejected every real order). Generated and reviewed *before* being applied — the diff was confirmed to touch nothing else.
+
+**Already-applied migrations are never rewritten.** Any future schema change — including a real FK on `order_lines.product_id` once the catalog migrates to the database — must be a new migration file generated by `drizzle-kit generate` against the current schema, never a hand-edit of `0000_lame_gwen_stacy.sql` or `0001_amazing_hammerhead.sql`.
+
+### 11. Environment variables
+
+Two variable **names** (values are never committed anywhere):
+
+- `DATABASE_URL` — the pooled Neon connection string, used by the application at request time (`src/db/index.ts`).
+- `DATABASE_URL_UNPOOLED` — the direct/unpooled connection string, used by Drizzle Kit for migrations (`drizzle.config.ts`) — migration tooling behaves better against a direct connection than through a pooler.
+
+`.env.example` documents both variable names only, with an explanatory comment — never real values. Local development: copy `.env.example` to `.env.local` and fill in real values from your own Neon project dashboard; `.env.local` is gitignored (`.gitignore`'s `.env*` rule, with an explicit `!.env.example` exception so the example file itself can still be committed — see the note under "Drizzle env loading" below for why that exception was necessary). **Never** prefix a database credential with `NEXT_PUBLIC_` — that prefix ships the value into the client bundle. Production/deployment: set both variables as real Vercel environment variables (or your hosting provider's equivalent) — never hardcoded, never committed.
+
+### 12. Drizzle env loading
+
+Drizzle Kit (`db:generate`/`db:migrate`/`db:studio`) runs as a standalone CLI, outside Next's own request pipeline, so it does not automatically pick up `.env.local` the way `next dev`/`next build`/`next start` do. `drizzle.config.ts` fixes this by calling `loadEnvConfig()` from **`@next/env`** before reading `process.env` — this is Next.js's own internal env-loading package, already present as a transitive dependency of `next` itself, so **no new package was installed** to make this work (deliberately not `dotenv`, to avoid adding an explicit new dependency for something Next already ships).
+
+### 13. Security
+
+- All database access is **server-only** — `src/db/index.ts` and every module under `src/server/` import the `server-only` package, which throws a build error if any of that code is ever imported into a client bundle.
+- The client **never** sends a price; the server recomputes every dollar amount from the authoritative product on every request (see "Server order creation" above) — client-submitted totals are never trusted, because there aren't any.
+- Every line is independently verified: real product, `published` status, cart-eligible purchase mode, real package/option/add-on selections. A stale or no-longer-available product (e.g. since reverted to draft, or never published) is rejected with a safe 409, never silently accepted.
+- Database failures return a **safe, generic** client-facing error (`"We couldn't create your order. Please try again."`) — never a raw driver error or stack trace. This was specifically live-verified: `createOrder()`'s try/catch originally didn't wrap `getDb()` itself, so a missing `DATABASE_URL` produced an uncaught exception and an empty response body; this was caught during testing and fixed by widening the try block to cover the whole function body.
+- Logging never includes a complete customer/order payload — failures log a `clientRequestId` and the error object only, never full PII.
+- **Rate limiting is not implemented.** `POST /api/orders` should **not** be considered abuse-hardened for public production traffic until a real rate limiter is added in front of it — this is a known, documented gap, not an oversight.
+
+### 14. Checkout integration
+
+`POST /api/orders` is now the **primary** submission path from `/checkout` (see "Submission" under "Checkout + Order foundation" above). A successful order shows the real, durably-persisted `BRCP-####` number. The cart and the checkout session draft are cleared **only** after the server confirms success — never optimistically, never on a failed or in-flight request. The Phase 10 `mailto:` mechanism remains available as an always-visible **secondary** fallback, not the primary method.
+
+### 15. Live database testing — what was genuinely verified
+
+All of the following were tested against a **real** Neon database (not simulated, not assumed), using temporary throwaway test products and real requests through the running `/api/orders` endpoint, then fully cleaned up afterward:
+
+- Migrations applied successfully (`0000_lame_gwen_stacy.sql`, then `0001_amazing_hammerhead.sql`).
+- Every schema object confirmed present via `information_schema`/`pg_indexes` queries: the sequence, all four tables, all three unique indexes, and exactly the two intended foreign keys (`order_lines.order_id → orders.id` CASCADE, `orders.customer_id → customers.id`).
+- Real customer row creation.
+- Real order row creation.
+- Real order-line row creation.
+- Real `BRCP-####` sequence generation (`BRCP-1001` through `BRCP-1005` across the test run).
+- **Sequential** idempotency: resubmitting the same `clientRequestId` returned the same order, with no duplicate row created.
+- Customer deduplication by normalized email (differing case and whitespace resolved to one customer row).
+- Frozen historical snapshots: a live product's price was changed after an order existed; the existing order line's stored price was unaffected, and a new order for the same product correctly picked up the new price.
+- A `starting-price` order received `"needs-review"`.
+- `fixed-price` and `deposit` orders received `"submitted"`.
+- A draft (no longer published) product and an inquiry-mode (never cart-eligible) product were both correctly rejected with a 409, neither creating any order/customer row.
+- Transaction rollback on a mid-transaction failure — verified with a temporary, env-gated fault injection, removed immediately after.
+- All test data (5 orders, their cascaded order lines, 2 customers) was deleted afterward; every table was confirmed back at zero rows.
+
+**Not tested:** true simultaneous-concurrency idempotency (the unique-constraint-catch race branch — see "Idempotency" above). This is an honest, documented gap, not a claim of completeness.
+
+### 16. Future admin panel (documentation only)
+
+`products`, `customers`, `orders`, and `order_lines` are shaped so a future **Big Red Admin** can eventually power, without a data-model migration: order listing/search/filtering, customer records and history, per-line intake status (once that concept exists — see `OrderLine.intakeRequired`/`intakeFormSlug`/`intakeStatus`, still always `undefined`), payment status (once a payment phase exists), and attached files/internal notes (schema not yet defined for these — will need new tables when built). No admin UI exists yet; this phase only built the data layer it will eventually read and write.
+
+### 17. Big Red Brain / Obsidian boundary (documentation only — no implementation, unchanged from Phase 10)
+
+The privacy boundary described under "Checkout + Order foundation" above applies without exception to everything this phase added: `customers`, `orders`, and `order_lines` are **private operational data**, exactly like the future intake/payment/internal-notes data that will join them. Nothing in this phase changes that boundary — it just means there is now a real database on the private side of it, not just a documented intention. Public-facing AI must never automatically receive customer, order, payment, or internal-note data; **Big Red Brain** remains a future, explicitly permission-controlled layer, and the **Obsidian Vault** remains a separate, private business-knowledge source. No AI or Obsidian integration exists in this codebase.
+
+### 18. Future product/catalog migration
+
+The public storefront (`/store`, `/store/[slug]`) remains entirely TypeScript-backed by `src/data/products.ts` — **this phase does not migrate it to database reads.** The database `products` table exists purely as groundwork (schema-only, zero rows) for a future phase that builds a real content/admin workflow. Order creation already goes through the swappable `getAuthoritativeProduct()` boundary (see "Authoritative product source" above) specifically so that future migration changes one function's implementation, not the storefront, the cart, or the order-creation flow.
 
 ## Rules for creating new components
 
