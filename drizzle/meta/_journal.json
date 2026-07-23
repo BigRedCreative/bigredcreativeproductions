@@ -15,6 +15,13 @@
       "when": 1784818629802,
       "tag": "0001_amazing_hammerhead",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1784821331274,
+      "tag": "0002_free_sugar_man",
+      "breakpoints": true
     }
   ]
 }

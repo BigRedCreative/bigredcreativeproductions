@@ -37,6 +37,40 @@ export const orderNumberSeq = pgSequence("order_number_seq", {
 });
 
 // ---------------------------------------------------------------------
+// Admin users — authorization only, not identity. Auth.js (Google OAuth,
+// JWT session strategy, no database adapter) establishes WHO someone is;
+// this table is the separate, independent decision of WHETHER that person
+// may use the admin system. There is no `authProviderUserId` column —
+// matching is by normalized email against the Google-verified identity,
+// which is sufficient since Google OAuth only ever returns a verified
+// mailbox. No password columns exist here or anywhere in this schema —
+// Auth.js/Google own all credential handling.
+//
+// `active` and `role` are read fresh from this table on every admin
+// request (see src/server/require-admin-user.ts) — never trusted from a
+// session/JWT claim, so deactivating someone takes effect on their very
+// next request regardless of how long their session token remains valid.
+// ---------------------------------------------------------------------
+export const ADMIN_ROLES = ["owner", "admin"] as const;
+export type AdminRole = (typeof ADMIN_ROLES)[number];
+
+export const adminUsers = pgTable(
+  "admin_users",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    // Always stored normalized (trim + lowercase), same convention as
+    // customers.email.
+    email: text("email").notNull(),
+    displayName: text("display_name").notNull(),
+    role: text("role").notNull().$type<AdminRole>(),
+    active: boolean("active").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [uniqueIndex("admin_users_email_unique").on(table.email)],
+);
+
+// ---------------------------------------------------------------------
 // Products — schema only. No real rows are inserted this phase (the
 // public catalog stays on src/data/products.ts until a content/admin
 // workflow exists — see CLAUDE.md). This table exists so order_lines has
