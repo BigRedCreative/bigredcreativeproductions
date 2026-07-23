@@ -24,6 +24,7 @@ src/
     store/page.tsx       — the /store catalog index (see "Store (storefront UI)")
     store/[slug]/page.tsx — dynamic, statically-generated product detail pages (see "Store (storefront UI)")
     cart/page.tsx        — the /cart route (see "Cart (transactional foundation)")
+    checkout/page.tsx      — the /checkout route (see "Checkout + Order foundation")
 
   components/
     Header.tsx, Hero.tsx, Ticker.tsx, Manifesto.tsx, Statement.tsx,
@@ -46,6 +47,8 @@ src/
     CartProvider.tsx, CartView.tsx, CartItemRow.tsx, CartSummary.tsx, CartEmptyState.tsx,
     CartQuantityControl.tsx, CartNavLink.tsx
       — the cart's Context/reducer provider + its UI, see "Cart (transactional foundation)"
+    CheckoutView.tsx, CheckoutCustomerForm.tsx, OrderReview.tsx
+      — the checkout flow's reducer/session-persistence + its UI, see "Checkout + Order foundation"
 
   components/ui/
     Button.tsx, SectionHeading.tsx, ProjectCard.tsx, ServiceCard.tsx, ProductCard.tsx, Badge.tsx
@@ -68,6 +71,10 @@ src/
     cart.ts            — CartItem/CartOptionSelection/CartPackageSelection/CartAddOnSelection
                           types, isCartEligible(), buildCartItem(), getConfigurationSignature()
     cart-pricing.ts       — centralized cart total calculations, see "Cart (transactional foundation)"
+    orders.ts           — OrderDraft/OrderLine types, buildOrderDraft(), cartItemToOrderLine(),
+                          the mailto order-request builders — see "Checkout + Order foundation"
+    orders.validate.ts     — RUNTIME validateOrderDraft() (returns errors, does not throw —
+                          different in kind from the build-time *.validate.ts files above)
     navigation.ts        — header nav links + CTA (hrefs derived from config/sections.ts and products.ts).
                           The live Cart (N) indicator is NOT in this file — see "Cart navigation"
 
@@ -470,31 +477,128 @@ A small client component, `CartNavLink`, renders `Cart (N)` (N = summed quantity
 
 `src/app/cart/page.tsx` (server component, for its `metadata` export) renders `Header`, a heading, a client `CartView`, and `Footer`. `CartView` shows `CartEmptyState` when there are no items, or `CartItemRow` per line (title/link back to the product, selected package/options/add-ons, quantity control, per-line price, Remove) plus `CartSummary` (item count, subtotal — labeled "Estimated subtotal" whenever any line is a `starting-price` line, deposit due if applicable, and the checkout control).
 
-### Checkout boundary — explicitly not built
+### Checkout — now built (see "Checkout + Order foundation" below)
 
-No `/checkout` route exists. `CartSummary` renders a visibly **disabled** "Continue to Checkout" button (`disabled`, `aria-disabled="true"`, styled at reduced opacity) with adjacent "Checkout coming soon" text — it does not navigate anywhere and does not pretend payment is available. This was a deliberate choice over creating an empty placeholder route, which could be bookmarked/crawled and look like a broken page.
+`CartSummary`'s "Continue to Checkout" is a real link to `/checkout`, active whenever the cart has at least one item (the button/link only ever renders alongside a non-empty cart — `CartView` shows `CartEmptyState` instead when there's nothing to check out). The full checkout/order flow is documented in its own section below.
 
-### Future Order conversion (documented boundary, no types built)
+## Checkout + Order foundation
 
+**Status: a real checkout flow that ends in a "prepare an order request, hand off by email" step. Still no payment collection, no permanent order storage, no order numbers, no customer accounts, no admin.** This is the layer between the cart above and a real future Order system.
+
+### Core principle: Cart is mutable, Order data is frozen
+
+`OrderDraft`/`OrderLine` (`src/data/orders.ts`) are the checkout-and-beyond counterpart to `CartState`/`CartItem`: where a cart always re-derives its totals from live snapshots, an `OrderLine` freezes everything the moment it's created from a `CartItem`, including the line subtotal itself. Order rendering never depends on the current `Product` record — in fact `cartItemToOrderLine()`/`buildOrderDraft()` don't import `products.ts` at all, only `cart.ts`, which is a structural guarantee (not just a convention) that historical order data can't accidentally read live catalog state.
+
+### `OrderLine` schema
+
+```ts
+type OrderLine = {
+  orderLineId: string;      // crypto.randomUUID() — distinct from the CartItem's cartLineId
+  productId: string;        // permanent — never slug
+  productSlug: string;
+  productTitle: string;
+  productType: ProductType;
+  purchaseMode: PurchaseMode;
+  quantity: number;
+
+  // Reused directly from cart.ts — CartOptionSelection/CartPackageSelection/
+  // CartAddOnSelection are already frozen, Product-independent value
+  // shapes, so there are no separate Order-specific selection types.
+  selectedPackage?: CartPackageSelection;
+  selectedOptions: CartOptionSelection[];
+  selectedAddOns: CartAddOnSelection[];
+
+  unitPrice: number;
+  depositAmount?: number;
+  lineSubtotal: number;      // FROZEN here via calculateLineSubtotal() — unlike CartItem, which never stores this
+
+  // Service-intake handoff — always undefined today, see below.
+  intakeRequired?: boolean;
+  intakeFormSlug?: string;
+  intakeStatus?: "not-started" | "in-progress" | "complete";
+};
 ```
-CartState → Checkout (resolves/confirms any starting-price estimates, collects customer info)
-         → OrderDraft (temporary, in-progress)
-         → Payment
-         → Order (final, frozen, DB-backed)
+
+### `OrderDraft` schema and status lifecycle
+
+```ts
+const ORDER_STATUSES = ["draft", "submitted", "needs-review", "confirmed", "cancelled"] as const;
 ```
 
-No `Order`/`OrderDraft`/`OrderLine` type exists yet, and none was needed for the cart architecture itself — `CartItem`'s snapshot shape is already order-ready by design. When a real Order system is built, it should freeze: customer, cart lines, product snapshots, configuration, final resolved prices, deposit/payment context, and line totals — and historical orders must never depend on the live `Product` record for their own accuracy, exactly like `CartItem` doesn't today.
+No `paid`/`fulfilled`/`refunded` states exist yet — those belong to a future payment phase. `buildOrderDraft(items, customer, notes)` in `orders.ts` is the single place a `CartItem[]` + customer input becomes an `OrderDraft`, and it decides `status` itself: **any `starting-price` line makes the whole draft `"needs-review"` instead of `"submitted"`** — an unresolved estimate must never be presented as a confirmed, ready request. `OrderDraft` also carries `id` (permanent, `crypto.randomUUID()`), `createdAt`/`updatedAt`, `customer` (`OrderCustomer`), optional `billingAddress`/`shippingAddress` (`OrderAddress` — typed now, collected by **no** Phase 10 UI), `lines`, `pricingSummary` (`{ subtotal, depositDue, hasEstimatedPricing }`, all frozen at build time), and optional `notes`.
+
+**What "submitted" actually means in this phase:** it means the checkout request was prepared for the temporary email handoff below — **not** permanently stored, not paid, not confirmed, not accepted by Big Red Creative Productions. The UI is written to never imply otherwise (see "Honest wording" below).
+
+### No `orderNumber` yet — deliberately
+
+Only the permanent `id` (UUID) exists. A human-readable order number is deliberately **not** stubbed onto the type, even as an always-undefined optional field (unlike `billingAddress`/`shippingAddress`, which have a stable shape even though unused) — generating one safely requires a single server-side coordinating source of truth to guarantee uniqueness, and its real format (sequential? date-prefixed?) isn't decided yet. Never derive an order number from a timestamp, email, or client-side counter when this is eventually built.
+
+### Customer fields
+
+`OrderCustomer`: `firstName`, `lastName`, `email` (all required), `phone`, `company` (both optional). No passwords, no accounts — `validateOrderDraft()` enforces the required three plus a lightweight email-shape check, nothing more.
+
+### Runtime validation — different in kind from the build-time validators
+
+`src/data/orders.validate.ts` exports `validateOrderDraft(draft): string[]`. This is **not** the same pattern as `projects.validate.ts`/`services.validate.ts`/`products.validate.ts`, which throw at module load against a static, hardcoded array. An `OrderDraft` is constructed at runtime from checkout form input plus live cart state, so `validateOrderDraft` is called imperatively at submission time and **returns** every problem found (same "collect everything, not just the first" philosophy) for inline UI display — it never throws. It checks: required customer names, email shape, at least one line, required IDs and product-title snapshots per line, positive-integer quantities, non-negative integer-cent money fields, a valid `status`, deposit consistency (`depositAmount` only valid when `purchaseMode === "deposit"`), and estimated-pricing consistency (a `starting-price` line requires `pricingSummary.hasEstimatedPricing`).
+
+### Starting-price at checkout — Option A, tagged `needs-review`
+
+A cart containing unresolved `starting-price` items can still produce an order request — blocking submission outright didn't fit how a creative agency actually works (most engagements start as an estimate). Instead the resulting draft is tagged `"needs-review"` rather than `"submitted"`, and `OrderReview`/the submitted-state screen always visibly label estimated totals ("Estimated subtotal," "final price subject to confirmation") — never blended into a plain, confirmed-looking total.
+
+### Deposit handling
+
+Exactly mirrors the cart: `OrderLine.depositAmount` and `OrderPricingSummary.depositDue` are frozen snapshots. The UI distinguishes "Order value" (or "Estimated subtotal") from "Deposit expected later" — no "Pay Deposit" wording anywhere, no collection of any kind.
+
+### Service intake — prepared, not built
+
+`OrderLine.intakeRequired`/`intakeFormSlug`/`intakeStatus` exist on the type and are **always `undefined`** in this phase — nothing populates them, since neither `Product` nor the `Product`↔`Service` relationship currently declares an "intake required" concept. A future phase must decide whether that originates from `Product`, `Service`, or an explicit offering-to-intake relationship. Never duplicate actual questionnaire answers into an `OrderLine` — these three fields are a reference/status only.
+
+### `/checkout` route — one route, three in-page states
+
+`src/app/checkout/page.tsx` (server component, for `metadata`) renders `Header`, a heading, a client `CheckoutView`, and `Footer`. There is no `/checkout/review` or `/checkout/confirmation` — `CheckoutView` manages `"details" | "review" | "submitted"` as in-page state, exactly like the architecture report recommended. If the cart is empty (and the flow isn't already in the `"submitted"` state — a successful submission's confirmation must keep showing even if the cart is later emptied), `CheckoutView` shows an intentional empty state linking back to `/store` instead of building any `OrderDraft`.
+
+- **`details`** — `CheckoutCustomerForm`: native `<fieldset>`/`<label>`/`<input>`/`<textarea>`, `required`/`type="email"` for native browser validation as a first pass, plus `validateOrderDraft()` as the authoritative second pass. Validation errors render in a `role="alert" aria-live="assertive"` block.
+- **`review`** — `OrderReview` (see below) plus "Back" (returns to `details`, keeping entered values) and "Submit Order Request."
+- **`submitted`** — the honest confirmation screen (see below).
+
+### `OrderReview` — presentational only, frozen data only
+
+A dedicated component, not a reuse of `CartItemRow` (which carries live quantity/remove controls wired to `useCart()` — the wrong affordances for a historical review). It renders exclusively from `OrderDraft.lines`: title, package/options/add-ons, quantity, line subtotal (estimate-labeled when applicable), deposit context, and the order-level pricing summary — no live `Product` lookup anywhere in it.
+
+### The temporary mailto handoff — and why
+
+Phase 10 has no server, and transactional email is explicitly out of scope, so "Submit Order Request" can't honestly claim to deliver anywhere on its own. Rather than inventing a new fake "submitted" state, it reuses the site's **existing** no-backend submission mechanism — the same `mailto:` pattern `ContactForm.tsx` already relies on in production. Clicking "Submit Order Request" (a real `<a href="mailto:...">`, not a JS redirect — inspectable, right-click-able, keyboard-operable) opens the customer's email client with a structured plain-text summary (`buildOrderRequestSummary()` in `orders.ts`) addressed to `siteConfig.email`, containing customer info, every line's configuration and pricing, the order-level summary, estimate/deposit context, notes, and the draft's UUID for reference — deliberately **no** browser/system information.
+
+### Honest wording — no false confirmation, ever
+
+Opening a mail client does not prove an email was sent. The `"submitted"` screen never says "Order submitted successfully," "Order received," or "We got your order" — it says **"Your order request has been prepared"** and **"Your email app should open with the request filled in. Please send the email to complete your request,"** plus an explicit **"No payment has been collected and this request is not yet stored in our order system."** A fallback is always shown alongside: the visible business email address (linked and as plain text) with the draft's reference id, and a read-only `<textarea>` containing the exact plain-text summary so a customer can copy it manually if their email client never opened.
+
+### Persistence — `sessionStorage`, deliberately different from the cart's `localStorage`
+
+`CheckoutView` persists `{ version, step, customer, notes, submittedDraft? }` to `sessionStorage` under a versioned envelope (`CHECKOUT_SCHEMA_VERSION`), using the exact same hydration-safe pattern as `CartProvider`: state starts at its deterministic default on both the server render and the first client render, a post-mount effect restores whatever was persisted, and a "skip the first persist run" ref guard (the same fix `CartProvider` uses) stops that restore from being immediately overwritten by stale initial state. Any shape mismatch, version mismatch, or parse failure discards the whole persisted state — logged via `console.warn`, never thrown. This is **session-scoped on purpose**, unlike the cart: an in-progress or already-submitted checkout shouldn't silently reappear days later the way the cart is meant to, and `sessionStorage` itself doesn't imply more permanence than actually exists. `checkoutReducer`, `isValidPersistedState`, and `loadPersistedCheckout` are exported from `CheckoutView.tsx` for the same reason `CartProvider`'s equivalents are — direct testability independent of React.
+
+### Cart clearing — still not done, on purpose
+
+The cart is **not** cleared when `/checkout` opens, not on validation failure, not when the mailto link opens, and not once the `"submitted"` state appears — because none of those events are a confirmed server-side order. There's no reliable way to detect whether a customer actually sent the resulting email, either. Cart clearing is explicitly deferred to whenever a real backend confirms order creation in a later phase.
+
+### Future server/database boundary
+
+The following explicitly require a real backend and are not faked client-side anywhere in this codebase: permanent order creation and durable storage, human-readable `orderNumber` generation, customer records, secure order-status transitions (only staff should ever move a draft to `"confirmed"` — a client can't honestly enforce that), transactional email delivery, payment sessions, admin retrieval, and any real server acknowledgement that an order exists. Cart clearing after a confirmed order is on this same list.
+
+### Future admin panel (documentation only)
+
+`OrderDraft`/`OrderLine` are shaped so a future **Big Red Admin** can eventually show, without a data-model migration: order lines, customer, per-line intake status, order status, deposit/payment context, and (once built) attached files and internal notes — mirroring exactly how `Product`/`Service` were shaped for the same future admin in earlier phases. Planned path: `Order → Customer → Order Lines → Intake → Files → Internal Notes → Payment → Status`. No admin UI exists yet.
 
 ### Big Red Brain / Obsidian boundary (documentation only — no implementation)
 
 The long-term system separates:
 
-- **Public Website / Store / Cart** — the public commerce interface (everything documented above).
-- **Orders / Customers / Admin** — private operational data, once built.
-- **Big Red Brain** — a future AI layer operating only over explicitly-permitted business knowledge.
-- **Obsidian Vault** — a private business-knowledge source, never automatically public.
+- **Public** — website, services, store, cart, checkout (everything documented in this file so far).
+- **Private operational data** — customers, orders, intake, payments, internal notes, once any of that is built.
+- **Big Red Brain** — a future AI layer that may eventually access only explicitly authorized data.
+- **Obsidian Vault** — a separate, private business-knowledge source.
 
-Customer, cart, and order information must never automatically become public-facing AI context. No AI or Obsidian integration exists in this codebase yet.
+Customer email, phone, address, order history, payment information, and private intake responses must never automatically become public-facing AI context. No AI or Obsidian integration exists in this codebase yet.
 
 ## Rules for creating new components
 
