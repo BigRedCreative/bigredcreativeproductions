@@ -26,6 +26,8 @@ src/
     cart/page.tsx        — the /cart route (see "Cart (transactional foundation)")
     checkout/page.tsx      — the /checkout route (see "Checkout + Order foundation")
     api/orders/route.ts     — POST /api/orders Route Handler, see "Backend + database foundation"
+    api/auth/[...nextauth]/route.ts — Auth.js's own GET/POST handlers, re-exported from src/auth.ts
+    admin/               — the protected admin system, see "Admin foundation" below
 
   components/
     Header.tsx, Hero.tsx, Ticker.tsx, Manifesto.tsx, Statement.tsx,
@@ -93,6 +95,13 @@ src/
     product-source.ts     — getAuthoritativeProduct(): the one swappable product-lookup boundary
     verify-configuration.ts — strict server-side package/option/add-on verification for API requests
     create-order.ts       — the atomic Customer+Order+OrderLine transaction, idempotency handling
+    require-admin-user.ts   — requireAdminUser(): the one real admin authorization boundary
+    is-uuid.ts             — shared route-param validation, used before any uuid-typed DB lookup
+    queries/orders.ts        — server-only, read-only admin order queries (list/detail/status counts)
+    queries/customers.ts       — server-only, read-only admin customer queries (list/detail/count)
+
+  auth.ts                — Auth.js v5 config (Google OAuth, JWT sessions, no adapter tables)
+  proxy.ts                — Next.js 16's proxy convention (not middleware.ts) — admin fast-path redirect only
 ```
 
 drizzle.config.ts (project root) and drizzle/ (generated, versioned migration SQL) are Drizzle Kit's
@@ -761,6 +770,138 @@ The privacy boundary described under "Checkout + Order foundation" above applies
 ### 18. Future product/catalog migration
 
 The public storefront (`/store`, `/store/[slug]`) remains entirely TypeScript-backed by `src/data/products.ts` — **this phase does not migrate it to database reads.** The database `products` table exists purely as groundwork (schema-only, zero rows) for a future phase that builds a real content/admin workflow. Order creation already goes through the swappable `getAuthoritativeProduct()` boundary (see "Authoritative product source" above) specifically so that future migration changes one function's implementation, not the storefront, the cart, or the order-creation flow.
+
+## Admin foundation
+
+**Status: a real, working admin system with real Google-account authentication, database-backed authorization, and read-only operational views — live-tested end to end, including a real sign-in.** Still no order-status editing, no audit log, no product/service/portfolio/media/website content admin, no Big Red Brain, no Obsidian integration. This is the first phase to add anything under `/admin`.
+
+### Auth.js v5 + Google OAuth
+
+Authentication is **Auth.js v5** (`next-auth@beta`, currently `5.0.0-beta.x` — Auth.js v5 has been in long-running beta and is still installed via the `beta` npm dist-tag, not `latest`, which is still v4), configured in `src/auth.ts`:
+
+```ts
+export const { handlers, auth, signIn, signOut } = NextAuth({
+  providers: [Google],
+});
+```
+
+- **Google OAuth only** — no Credentials provider, no password of any kind is ever collected or stored by this codebase. `src/app/api/auth/[...nextauth]/route.ts` re-exports `{ GET, POST } = handlers` — this is the OAuth callback endpoint Google redirects back to (`/api/auth/callback/google`), verified directly against Auth.js's own docs rather than assumed.
+- **JWT session strategy — no database adapter.** This is the default when no adapter is configured, and it's a deliberate choice: it avoids adding Auth.js's own `users`/`accounts`/`sessions`/`verification_tokens` tables entirely. The session cookie only ever carries basic Google identity (email, name) — **never a role or an `active` flag** (see "Authorization" below for why that matters).
+
+### `admin_users` — authorization, not identity
+
+A single new table (`src/db/schema.ts`), deliberately separate from anything Auth.js owns:
+
+```ts
+adminUsers {
+  id: uuid, pk, default random
+  email: text, unique, not null       // normalized: trim + lowercase
+  displayName: text, not null
+  role: text, not null                 // "owner" | "admin"
+  active: boolean, not null, default true
+  createdAt: timestamptz, not null, default now()
+  updatedAt: timestamptz, not null, default now()
+}
+```
+
+No `authProviderUserId` column — matching is by normalized email against the Google-verified identity, which is sufficient since Google OAuth only ever returns a verified mailbox. No password column, here or anywhere else in this schema. `role: "owner" | "admin"` currently grants **identical** permissions — the two-value union exists now purely so `staff`/`client` roles can be added later without a migration, not because anything branches on it yet.
+
+### `requireAdminUser()` — the one real authorization boundary
+
+`src/server/require-admin-user.ts`, `server-only`:
+
+1. Gets the Auth.js session via `auth()`.
+2. Requires an authenticated identity (`session.user.email`) — redirects to `/admin/login` if none.
+3. Normalizes the email (`.trim().toLowerCase()`).
+4. Queries `admin_users` by that email — **fresh, from the database, on every single call.**
+5. Requires an existing row, `active: true`, and a role in `["owner", "admin"]` — redirects to `/admin/access-denied` if any of that fails.
+6. Returns only `{ id, email, displayName, role }` — never the full row, never anything beyond what protected code needs.
+
+**Role/active are never trusted from the session or JWT** — deactivating an `admin_users` row takes effect on that person's very next request, regardless of how long their Google session/JWT remains cryptographically valid. This was the specific reason JWT-only sessions (no adapter) were chosen: the practical security property people actually want from "database sessions" is achieved here at the authorization layer instead, with one table instead of four.
+
+`requireAdminUser()` is called in `src/app/admin/(protected)/layout.tsx`, which means it runs on **every** request to `/admin`, `/admin/orders`, `/admin/orders/[id]`, `/admin/customers`, `/admin/customers/[id]` — a layout's server component body executes for every nested route. **This does not cover Server Actions or Route Handlers** — confirmed directly against Next.js's own `proxy.js` documentation, which states plainly: *"Server Functions are not separate routes in this chain... Always verify authentication and authorization inside each Server Function rather than relying on Proxy alone."* Every future admin Server Action or Route Handler — starting with whatever eventually implements order-status editing — **must call `requireAdminUser()` itself**, independently, even though a page-level check already ran for whatever rendered the form/button that triggers it. This rule is written down now, in Phase 12, specifically because Phase 12 itself has no mutating actions yet to enforce it as an example — the next phase that adds one must not skip this.
+
+### `src/proxy.ts` — not `middleware.ts`
+
+Next.js 16 **renamed** the `middleware.ts` file convention to `proxy.ts` (exported function renamed `middleware` → `proxy`, or a default export) — confirmed directly against Next's own `v16.2.11` docs during this phase, not assumed from older examples. This matters more than a cosmetic rename: **a leftover `middleware.ts` is silently ignored at build time, with no error and no warning** — auth/redirect logic would simply stop running and protected routes would become reachable, with nothing in the build output flagging it. `src/proxy.ts` is the correctly-named file for this Next.js version; the build output's route summary confirms it's actually active (`ƒ Proxy (Middleware)` appears in `npm run build`'s output).
+
+`src/proxy.ts` wraps `auth()` from `src/auth.ts` and does exactly one thing: if a request to `/admin/:path*` (matcher covers `/admin` and everything under it, `/admin/login` explicitly exempted to avoid a redirect loop) has no session at all, redirect to `/admin/login`. **This is a fast-path convenience redirect only, not the real security boundary** — it never touches the database, and per the point above, it doesn't cover Server Actions/Route Handlers at all. `requireAdminUser()` is the actual authorization decision.
+
+### Protected admin routes
+
+```
+/admin/login             — public, no auth check — "Sign in with Google"
+/admin/access-denied      — reachable by an authenticated-but-unauthorized session — no auth check itself
+/admin                   — dashboard (protected)
+/admin/orders             — orders list (protected)
+/admin/orders/[id]          — order detail (protected)
+/admin/customers            — customers list (protected)
+/admin/customers/[id]         — customer detail (protected)
+```
+
+Route-group structure: `src/app/admin/layout.tsx` (top-level — imports the admin stylesheet, sets `robots: { index: false, follow: false }`, does **no** auth check) wraps everything, including `login/` and `access-denied/`, which sit as siblings outside the `(protected)` route group. `src/app/admin/(protected)/layout.tsx` is what actually calls `requireAdminUser()` and renders the sidebar/header shell — only routes inside that group are protected. Route groups (`(protected)`) don't appear in the URL, so `/admin/(protected)/orders/page.tsx` serves `/admin/orders` exactly as shown above.
+
+**Reserved, not built:** `/admin/products`, `/admin/services`, `/admin/portfolio`, `/admin/media`, `/admin/website`, `/admin/settings`, `/admin/brain` — listed in `src/config/admin-nav.ts`'s `adminNavItems` with `available: false`, rendered in the sidebar as plain disabled text with a "Coming later" badge, **never a real `<a>`/`<Link>`, never a working href.** Add a route here only when it actually exists.
+
+**No public navigation ever links to `/admin`** — reachable only by its direct URL, and excluded from search indexing via the layout's `robots` metadata.
+
+### Admin shell
+
+`src/components/admin/AdminSidebar.tsx` (the one client component in the shell — needed only for `usePathname()`-driven active-link highlighting) + `AdminHeader.tsx` (server component — current admin's `displayName`/`email`, a native `<form>` sign-out button posting to an inline `signOut()` server action, no client JS). Styled by `src/app/admin/admin.css` — a **separate stylesheet from `globals.css`**, imported only by the top-level admin layout so admin-only class names (`.admin-*`) can never collide with public-site ones. It reuses `globals.css`'s `:root` design tokens directly (same red/black/cream palette, same heavy borders, same uppercase/letter-spaced labels) but in a deliberately utilitarian dashboard register — no rotated CTAs, no split-word marketing typography. Responsive at the same `900px`/`560px` breakpoints already used sitewide (sidebar collapses to a horizontal scroll bar on narrow viewports).
+
+### Admin dashboard
+
+`/admin` shows real Neon counts only — total orders, submitted, needs-review, confirmed, customers — via `getOrderStatusCounts()`/`getCustomerCount()`. An empty database correctly shows zeros everywhere; nothing is seeded to make the page look populated, and no revenue metric exists (there's no payment data anywhere in this schema to compute one from).
+
+### Orders and customers — read-only, server-only queries
+
+`src/server/queries/orders.ts` and `customers.ts` — `server-only`, plain Drizzle, never imported by a client component, and **contain no `insert`/`update`/`delete` calls anywhere** (verified by direct grep, not just by intent). All admin data reads go through these two modules; nothing else queries `orders`/`customers`/`order_lines` directly.
+
+- **`listOrders({ page, status, search })`** — joins `orders` + `customers` (for the list row), optional exact-match `status` filter (validated against the real `ORDER_STATUSES` union — an unrecognized value is silently ignored, never passed through to SQL), optional `ILIKE` search across order number and customer name/email, `ORDER BY created_at DESC`, `LIMIT 25 OFFSET`.
+- **`getOrderById(id)`** — validates `id` looks like a real UUID *before* ever touching the database (see "Malformed IDs" below), then uses Drizzle's relational query API (`with: { customer: true, lines: true }`) to fetch the order, its customer, and its **frozen `order_lines` rows** in one call. **This function never joins against, or falls back to, `products` or `src/data/products.ts`** — every field the order detail page renders (title, quantity, package, options, add-ons, unit price, deposit, line subtotal, intake fields) comes directly off the frozen snapshot, exactly matching the same principle already established in "Backend + database foundation."
+- **`listCustomers({ page, search })`** — `ILIKE` search across name/email/company, plus a `LEFT JOIN` + `GROUP BY` to compute each customer's order count and most recent order date in the same query.
+- **`getCustomerById(id)`** — same UUID pre-validation, then the customer plus their full order list (via the `customers.orders` relation), sorted newest-first.
+
+### Pagination and search
+
+**Offset-based (`LIMIT`/`OFFSET`), URL-driven** — `/admin/orders?page=2&status=submitted&q=john`, `/admin/customers?page=2&q=acme`. Fixed at **25 rows per page**. No cursor/keyset pagination, no data-grid dependency — a plain server-rendered `<table>` plus `AdminPagination` (`Prev`/`Next` `<Link>`s that preserve the current filters). Search is plain **Postgres `ILIKE`**, not full-text search — adequate at this business's realistic scale; a `tsvector` upgrade is a natural future step if search ever gets slow, not something built preemptively.
+
+The filter/search bar itself needs **no client JavaScript at all** — `OrdersFilterBar`/`CustomersFilterBar` are plain server components rendering a native `<form method="GET">`; submitting a GET form naturally encodes its inputs into the URL's query string, which is exactly the shape the page already reads from. This is a stricter version of the "native form, no client JS" pattern already used by `CheckoutCustomerForm`.
+
+### Malformed or nonexistent admin IDs
+
+`src/server/is-uuid.ts` exports `isValidUuid()` — a plain regex check. A `[id]` route param that isn't a well-formed UUID sent straight into a `uuid`-typed Postgres column comparison throws a raw driver error (`22P02`, invalid input syntax), not a clean "no rows found" result. Both `getOrderById()` and `getCustomerById()` check the shape first and return `null` immediately for anything malformed, exactly like a genuinely nonexistent (but well-formed) id — the page then calls `notFound()`. A garbage `/admin/orders/not-a-real-id` URL and a syntactically valid but nonexistent UUID both produce the same safe 404, never a raw database error.
+
+### Order status — read-only in Phase 12, deliberately
+
+The order detail page displays status (`StatusBadge`) but has **no editing control of any kind** — no dropdown, no form, no server action. This was an explicit decision, not an oversight: order-status changes are the first *operational write* the admin system would perform, and **an audit log (who changed what, when) is required before any admin action starts changing operational records** — that log doesn't exist yet. When status editing does ship, it must: call `requireAdminUser()` independently (see above), validate against a fixed, explicit transition table (never arbitrary status-to-status jumps), bump `updatedAt`, and be logged.
+
+### First-owner bootstrap
+
+There is no admin UI to create an `admin_users` row (correctly out of scope for Phase 12), and **the first owner is never auto-created from whichever Google account happens to sign in first** — that would let anyone with a Google account claim ownership. The one existing row was inserted via a single, manual, one-off SQL statement run directly against Neon (the same `node -e`/small-script pattern used for Phase 11's live verification), after confirming the exact real email with the site owner and showing the exact non-secret row (`email`, `displayName`, `role: "owner"`, `active: true`) for explicit approval before insertion. **No seed script exists, and no email is hardcoded anywhere in source** — the only place that email lives is the `admin_users` row itself. Adding a second admin later follows the same manual process until a real "invite an admin" UI exists.
+
+### Environment variables
+
+Three new variable **names** (values never committed):
+
+- `AUTH_SECRET` — Auth.js's session signing/encryption secret.
+- `AUTH_GOOGLE_ID` / `AUTH_GOOGLE_SECRET` — from a Google Cloud OAuth 2.0 Client (Web application type), auto-inferred by Auth.js from this exact naming convention (`AUTH_{PROVIDER}_{ID|SECRET}`).
+
+All three added to `.env.example` as names only. **A note on generating `AUTH_SECRET` safely:** `npx auth secret` (suggested by Auth.js's own docs) resolved, in this environment, to an unrelated package that printed a `BETTER_AUTH_SECRET`-named suggestion instead of Auth.js's own convention — a real mismatch, not a hypothetical one. Rather than use that output, the secret actually in use was generated with `node -e "require('fs').appendFileSync('.env.local', '\nAUTH_SECRET=' + require('crypto').randomBytes(32).toString('base64') + '\n')"`, which writes a cryptographically random value directly into `.env.local` **without ever printing it** to any terminal output. `openssl rand -base64 32` is an equally good alternative if available. Real values live only in `.env.local` (gitignored) locally, and would go into Vercel's Environment Variables for deployment — same pattern as `DATABASE_URL`/`DATABASE_URL_UNPOOLED`.
+
+### Security summary
+
+- Every database module — `src/db/index.ts`, everything under `src/server/` — imports `server-only`.
+- Authorization is a server-side database check on every protected request, never a client-side hide/show, never trusted from a JWT claim.
+- No public route imports `src/server/queries/*`, `src/db/schema`, or `require-admin-user` — verified directly (no matches outside `src/app/admin`).
+- `/api/orders` still only ever returns `{ id, orderNumber, status }` — no customer/order PII is exposed through any public route, admin or otherwise.
+- Database failures still return safe, generic errors — nothing new in this phase changes that Phase 11 guarantee.
+- **Audit logging is required before any operational admin write action ships** — this is the load-bearing reason order-status editing stayed out of Phase 12, and applies to every future admin mutation, not just that one.
+- Rate limiting on `/admin/login` remains undone, same documented gap as `/api/orders` in Phase 11 — lower urgency here since a Google-authenticated admin surface has no password to brute-force, but not yet "abuse-hardened."
+
+### Future admin expansion
+
+`admin_users`, plus the existing `products`/`customers`/`orders`/`order_lines` tables, are shaped to eventually power — without a redesign — the reserved sidebar sections: **Products, Website, Portfolio, Services, Media, Settings**, each its own future admin surface once a real content workflow exists (see "Future product/catalog migration" under "Backend + database foundation" for the product-specific version of this). **Big Red Brain** and **Obsidian/Knowledge** stay exactly where the Phase 10/11 privacy boundary already put them: private operational data (`admin_users`, `customers`, `orders`, `order_lines`, and anything future intake/payment/notes tables add) must never automatically become public-facing or AI-accessible context. Big Red Brain remains a future, explicitly permission-controlled layer; the Obsidian Vault remains a separate, private business-knowledge source. Nothing in Phase 12 changes that boundary — it just means there's now a real, working front door (Google-authenticated, database-authorized) standing in front of it.
 
 ## Rules for creating new components
 
