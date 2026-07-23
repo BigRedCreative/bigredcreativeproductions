@@ -23,6 +23,7 @@ src/
     work/[slug]/page.tsx — dynamic, statically-generated project detail pages (see "Portfolio system")
     store/page.tsx       — the /store catalog index (see "Store (storefront UI)")
     store/[slug]/page.tsx — dynamic, statically-generated product detail pages (see "Store (storefront UI)")
+    cart/page.tsx        — the /cart route (see "Cart (transactional foundation)")
 
   components/
     Header.tsx, Hero.tsx, Ticker.tsx, Manifesto.tsx, Statement.tsx,
@@ -33,13 +34,18 @@ src/
     ServiceHero.tsx, ServiceCapabilities.tsx, ServiceDeliverables.tsx, ServiceProcess.tsx, ServiceCTA.tsx
       — sections used only on /services/[slug] service detail pages
     ProductHero.tsx, ProductMedia.tsx, ProductDetails.tsx, ProductPricing.tsx,
-    ProductOptions.tsx, ProductPackages.tsx, ProductAddOns.tsx, ProductCTA.tsx
+    ProductOptions.tsx, ProductPackages.tsx, ProductAddOns.tsx, ProductCTA.tsx, ProductPurchasePanel.tsx
       — sections used only on /store/[slug] product detail pages; optional ones only
-        rendered by the page when the product actually has that data
+        rendered by the page when the product actually has that data. ProductOptions/
+        ProductPackages/ProductAddOns accept optional controlled-selection props so
+        ProductPurchasePanel can reuse them interactively — see "Cart"
     PortfolioGrid.tsx
       — client component: renders the homepage project grid + the category filter row
     StoreGrid.tsx
       — client component: renders the /store product grid + the category filter row
+    CartProvider.tsx, CartView.tsx, CartItemRow.tsx, CartSummary.tsx, CartEmptyState.tsx,
+    CartQuantityControl.tsx, CartNavLink.tsx
+      — the cart's Context/reducer provider + its UI, see "Cart (transactional foundation)"
 
   components/ui/
     Button.tsx, SectionHeading.tsx, ProjectCard.tsx, ServiceCard.tsx, ProductCard.tsx, Badge.tsx
@@ -59,7 +65,11 @@ src/
     product.template.ts    — copy-paste starter template for a new product (not used by the app)
     money.ts          — centralized Money (integer-cent) formatting, see "Store (storefront UI)"
     store.ts            — copy for the /store index page only (heading, intro, empty state)
-    navigation.ts        — header nav links + CTA (hrefs derived from config/sections.ts and products.ts)
+    cart.ts            — CartItem/CartOptionSelection/CartPackageSelection/CartAddOnSelection
+                          types, isCartEligible(), buildCartItem(), getConfigurationSignature()
+    cart-pricing.ts       — centralized cart total calculations, see "Cart (transactional foundation)"
+    navigation.ts        — header nav links + CTA (hrefs derived from config/sections.ts and products.ts).
+                          The live Cart (N) indicator is NOT in this file — see "Cart navigation"
 
   config/
     site.ts     — business identity: name, legal name, url, email, location, social links
@@ -240,7 +250,7 @@ This split exists specifically so a future rename doesn't silently break histori
 - **`PRODUCT_CATEGORIES`**: Design Services, Printing, Stickers & Labels, Event & Promotional, Merchandise, Other. Kept as a single fixed, centralized list (like `PROJECT_CATEGORIES`) specifically so it can be migrated into an admin-managed table later without touching every product.
 - **`ProductOption`** (`key`, `label`, `values: ProductOptionValue[]`, `required`) models generic configurable choices — size, quantity, finish, material, package tier, turnaround, etc. It is intentionally not sticker-specific. Each `ProductOptionValue` (`label`, `value`, optional `priceDelta`) may carry a *signed* price adjustment in cents (a smaller size can legitimately cost less than the base).
 - **`ProductPackage`** (`slug`, `label`, `description`, optional `price`/`startingPrice`/`deliverables`/`turnaround`) models tiered offerings like Basic/Standard/Premium under a single product.
-- **`ProductAddOn`** (`slug`, `label`, optional `description`/`price`) models optional extras (e.g. an extra revision round, rush production).
+- **`ProductAddOn`** (`slug`, `label`, optional `description`/`price`, required `chargeType: "per-line" | "per-unit"`) models optional extras (e.g. an extra revision round, rush production). `chargeType` is required specifically so add-on pricing is never ambiguous: `"per-line"` charges once for the whole cart line regardless of quantity; `"per-unit"` multiplies by quantity. See "Cart" below for how this is actually applied.
 - **`ProductPricing`** (`mode: PurchaseMode`, optional `basePrice`/`startingPrice`/`depositAmount`/`salePrice`/`pricingNote`) — the product's top-level/summary pricing, independent of any per-package pricing.
 - **`Money`** is `type Money = number` — **always integer cents**, never a float dollar amount. There is no currency field yet; USD is implied site-wide.
 
@@ -283,7 +293,7 @@ Structural checks (integer, non-negative, valid enum) always apply. "Must eventu
 
 ### Validation
 
-`src/data/products.validate.ts` exports `validateProducts()`, called at module load in `products.ts` exactly like `validateProjects()`/`validateServices()` — a bad entry fails `npm run dev`/`npm run build` immediately, listing every problem at once, not just the first. It checks (non-exhaustive): unique `id`, unique `slug`, valid `productType`/`status`/`category`/`pricing.mode`, non-empty `title`/`summary`, required `seo.title`/`seo.description`, the pricing-consistency rules above, non-negative integer-cent values on every money field (`priceDelta` is the one exception — it may be negative, but must still be a whole integer), image/video `alt` required, video `poster` required, local-only media paths scoped under that product's own `/images/products/[slug]/` folder, no duplicate media `src` within a product, no duplicate `options[].key`/`packages[].slug`/`addOns[].slug` within a product, and — if set — `relatedServiceSlug` must match a real `Service.slug`. An empty `products` array is valid; the catalog is allowed to start empty.
+`src/data/products.validate.ts` exports `validateProducts()`, called at module load in `products.ts` exactly like `validateProjects()`/`validateServices()` — a bad entry fails `npm run dev`/`npm run build` immediately, listing every problem at once, not just the first. It checks (non-exhaustive): unique `id`, unique `slug`, valid `productType`/`status`/`category`/`pricing.mode`, non-empty `title`/`summary`, required `seo.title`/`seo.description`, the pricing-consistency rules above, non-negative integer-cent values on every money field (`priceDelta` is the one exception — it may be negative, but must still be a whole integer), image/video `alt` required, video `poster` required, local-only media paths scoped under that product's own `/images/products/[slug]/` folder, no duplicate media `src` within a product, no duplicate `options[].key`/`packages[].slug`/`addOns[].slug` within a product, valid `addOns[].chargeType`, and — if set — `relatedServiceSlug` must match a real `Service.slug`. An empty `products` array is valid; the catalog is allowed to start empty.
 
 `PRODUCT_TYPES`/`PRODUCT_STATUSES`/`PRODUCT_CATEGORIES`/`PURCHASE_MODES` are passed into `validateProducts()` as parameters rather than imported by `products.validate.ts`, mirroring `projects.validate.ts`'s pattern — this avoids a circular import, since `products.ts` calls `validateProducts()` with its own data at module load. `services` **is** imported directly into `products.validate.ts` (safe: `services.ts` never imports from `products.ts`, so there's no cycle) to check `relatedServiceSlug` against real service slugs.
 
@@ -363,6 +373,128 @@ Every product's CTA (`ProductCTA`) links to `/#contact` and uses `product.ctaLab
 ### Future cart/checkout integration point
 
 Unchanged from the Phase 7 plan: `Product.pricing.mode` is what a future cart/checkout flow will branch on (`inquiry` → contact form as today, `fixed-price`/`full-payment` → direct checkout, `deposit` → partial-payment flow, `starting-price` → quote/inquiry first). `ProductCTA` is the single component that will need to grow that branching logic later — today it deliberately does not have it.
+
+## Cart (transactional foundation)
+
+**Status: a real, working client-side cart. Still no `/checkout`, no payments, no orders, no accounts, no admin.** This is the layer between the read-only storefront above and a future checkout — it lets a shopper configure and add eligible products/packages, see accurate running totals, and persist that cart across a refresh, entirely client-side.
+
+### Architecture
+
+React Context + `useReducer` (`src/components/CartProvider.tsx`) — no state-management dependency was added; none was needed. `CartProvider` wraps the whole app from `src/app/layout.tsx`, so `useCart()` is available anywhere. All cart math is centralized in `src/data/cart-pricing.ts` — components never do their own `unitPrice * quantity` arithmetic.
+
+### `CartItem` schema (`src/data/cart.ts`)
+
+```ts
+type CartItem = {
+  cartLineId: string;      // crypto.randomUUID() — identifies this LINE, not the product
+  productId: string;       // Product.id — permanent identity, never slug
+  productSlug: string;      // frozen display snapshot, for linking back
+  productTitle: string;      // frozen display snapshot
+  productType: ProductType;
+  purchaseMode: PurchaseMode;  // snapshot of pricing.mode at add-time
+  quantity: number;         // positive integer, >= 1
+
+  selectedPackage?: CartPackageSelection;   // { packageSlug, label, price?, startingPrice? }
+  selectedOptions: CartOptionSelection[];   // { optionKey, optionLabel, value, valueLabel, priceDelta }
+  selectedAddOns: CartAddOnSelection[];    // { addOnSlug, label, price?, chargeType }
+
+  unitPrice: number;       // cents — resolved once at add-time, see below
+  depositAmount?: number;    // cents snapshot, only when purchaseMode === "deposit"
+  addedAt: string;         // ISO timestamp
+};
+```
+
+The cart **never** stores a full `Product` object — only this frozen, transaction-relevant snapshot. `productSlug`/`productTitle` are captured once and never re-read from the live product, so a later rename or copy change doesn't alter what an already-added cart line shows.
+
+### `Product.id` vs slug in the cart
+
+Every cart operation (lookup, merge-detection, future order linkage) keys off `productId`, never `productSlug`. This is the same `id`/`slug` split documented under "Catalog system," now actually put to use: a product can be renamed or re-slugged later without touching any cart line that already references it by `id`.
+
+### Price snapshots — resolved once, never re-derived
+
+`unitPrice` is computed **once**, when an item is added, by `buildCartItem()` in `cart.ts`: the selected package's price (or the product's `basePrice`/`startingPrice` if no package), plus the sum of every selected option's `priceDelta`. It is never recalculated from the live product afterward — a price change on the product later does not retroactively change an existing cart line. Add-ons are priced **separately**, not folded into `unitPrice` — see below.
+
+### Add-on `chargeType` — per-line vs per-unit
+
+`ProductAddOn.chargeType` (`"per-line" | "per-unit"`, required) is snapshotted onto `CartAddOnSelection.chargeType` when added, and is what `calculateLineSubtotal()` in `cart-pricing.ts` branches on:
+
+```ts
+addOnsTotal = sum of: addOn.chargeType === "per-unit" ? addOn.price * quantity : addOn.price
+lineSubtotal = unitPrice * quantity + addOnsTotal
+```
+
+A `"per-line"` add-on (e.g. an extra revision round) charges once no matter the quantity; a `"per-unit"` add-on (e.g. an extra print color) scales with it.
+
+### Centralized cart math (`src/data/cart-pricing.ts`)
+
+`calculateLineSubtotal(item)`, `calculateCartSubtotal(items)`, `calculateCartItemCount(items)` (sum of quantities — a line with quantity 2 and a line with quantity 1 show as `Cart (3)`, not `Cart (2 lines)`), `calculateCartDepositDue(items)`, `cartHasEstimatedPricing(items)`. Nothing on `CartItem` stores a redundant total — every total is derived on demand, so a quantity change can never leave a stale stored number behind. This is deliberately different from a future **Order**, which will freeze a real `lineTotal` permanently once created (mutable cart derives; immutable order freezes).
+
+### Cart line identity and merging
+
+`getConfigurationSignature()` builds a deterministic, order-safe string from `productId` + selected package slug + sorted option key:value pairs + sorted add-on slugs (never including `cartLineId`, quantity, or `addedAt`). `ADD_ITEM` in the reducer compares this signature against existing lines: an identical configuration **increments the existing line's quantity**; any different configuration (different package, different option, different add-on selection) becomes its own separate line, even for the same product.
+
+### Quantity rules
+
+Positive integers only, minimum 1, no decimals (`UPDATE_QUANTITY` floors and clamps), no invented maximum. The quantity stepper's "−" button clamps at 1 and never removes the line — removing a line is always the explicit "Remove" action (`REMOVE_ITEM`). Not hardcoded to 1 for `productType: "service"`.
+
+### Purchase-mode behavior
+
+- **`inquiry`** — never enters the cart, under any circumstance. `isCartEligible()` returns `false` unconditionally for it; the product page keeps rendering the original inquiry-only `ProductCTA` exactly as in Phase 8.
+- **`fixed-price` / `full-payment`** — fully cart-eligible once `basePrice` is set (already guaranteed for any published product by the Phase 7 validator).
+- **`deposit`** — cart-eligible once `depositAmount` and a base/starting price are set. The cart snapshots both `unitPrice` (full/base price) and `depositAmount` separately, so `CartItemRow`/`CartSummary` can show "Total" and "Deposit due now" as distinct numbers. No payment collection of any kind exists.
+- **`starting-price`** — cart-eligible (Option B) once either `pricing.startingPrice` or a package with its own `price`/`startingPrice` exists. Every cart line built from a `starting-price` product keeps `purchaseMode: "starting-price"` regardless of whether a specific package resolved a concrete number, and `CartItemRow`/`CartSummary` always label these lines/totals as estimated ("Est. $X", "Estimated subtotal", "final price subject to confirmation") rather than distinguishing "resolved" from "unresolved" starting-price lines. This is a deliberate simplification in favor of never understating uncertainty — a future checkout phase is what actually resolves/confirms a final number before payment.
+
+`isCartEligible(product)` in `cart.ts` is the **one** place this logic lives — no component re-implements these checks.
+
+### Product configuration (`ProductPurchasePanel`)
+
+For eligible products, `/store/[slug]/page.tsx` renders `ProductPurchasePanel` (a client component) instead of the informational options/packages/add-ons blocks + `ProductCTA`. It owns local configuration state (selected package, selected option values, selected add-on slugs, quantity), computes a live price preview using the same `buildCartItem()` the real "Add to Cart" action uses (so the number shown while configuring always matches what gets added), and disables "Add to Cart" until every required option has a value and a package is selected whenever the product has packages.
+
+`ProductOptions`, `ProductPackages`, and `ProductAddOns` were **extended**, not duplicated: each now accepts optional controlled-selection props (e.g. `ProductOptions`'s `selectedValues`/`onSelectValue`). Omitted (as on non-eligible product pages), they render exactly as they did in Phase 8 — read-only chips/cards/list. Provided (by `ProductPurchasePanel`), the same components render native `<input type="radio">`/`<input type="checkbox">` controls instead. None of the three needs a `"use client"` directive itself — they have no hooks of their own, so they work correctly whether imported from a server-rendered product page or from the client `ProductPurchasePanel`.
+
+### Persistence (`localStorage`)
+
+**Temporary pre-account persistence, not the order database.** A future accounts/checkout phase will migrate live cart state server-side; until then, the cart survives navigation and refresh via a versioned envelope in `localStorage`:
+
+```ts
+{ version: 1, items: CartItem[] }   // CART_SCHEMA_VERSION in cart.ts
+```
+
+Hydration-safe by construction: cart state starts **empty** on both the server render and the very first client render (so there's no hydration mismatch), then a `useEffect` — which only ever runs in the browser, after mount — reads and validates `localStorage`. Any shape mismatch, version mismatch, or JSON parse failure discards the **whole** persisted cart rather than trusting a partially-corrupt one; this is logged via `console.warn`, never thrown. `window`/`localStorage` are never touched outside effects or event handlers, so nothing runs during server rendering. `cartReducer`, `isValidCartItem`, and `loadPersistedCart` are exported from `CartProvider.tsx` specifically so this logic can be (and was) unit-tested directly.
+
+### Cart navigation
+
+A small client component, `CartNavLink`, renders `Cart (N)` (N = summed quantity across all lines) and is appended after the existing `primaryNav` map in `Header.tsx` — `navigation.ts` was **not** changed, since a live count can't live in a static data array. This was the one necessary, narrow touch to `Header.tsx`; nothing else about it changed.
+
+### `/cart` route
+
+`src/app/cart/page.tsx` (server component, for its `metadata` export) renders `Header`, a heading, a client `CartView`, and `Footer`. `CartView` shows `CartEmptyState` when there are no items, or `CartItemRow` per line (title/link back to the product, selected package/options/add-ons, quantity control, per-line price, Remove) plus `CartSummary` (item count, subtotal — labeled "Estimated subtotal" whenever any line is a `starting-price` line, deposit due if applicable, and the checkout control).
+
+### Checkout boundary — explicitly not built
+
+No `/checkout` route exists. `CartSummary` renders a visibly **disabled** "Continue to Checkout" button (`disabled`, `aria-disabled="true"`, styled at reduced opacity) with adjacent "Checkout coming soon" text — it does not navigate anywhere and does not pretend payment is available. This was a deliberate choice over creating an empty placeholder route, which could be bookmarked/crawled and look like a broken page.
+
+### Future Order conversion (documented boundary, no types built)
+
+```
+CartState → Checkout (resolves/confirms any starting-price estimates, collects customer info)
+         → OrderDraft (temporary, in-progress)
+         → Payment
+         → Order (final, frozen, DB-backed)
+```
+
+No `Order`/`OrderDraft`/`OrderLine` type exists yet, and none was needed for the cart architecture itself — `CartItem`'s snapshot shape is already order-ready by design. When a real Order system is built, it should freeze: customer, cart lines, product snapshots, configuration, final resolved prices, deposit/payment context, and line totals — and historical orders must never depend on the live `Product` record for their own accuracy, exactly like `CartItem` doesn't today.
+
+### Big Red Brain / Obsidian boundary (documentation only — no implementation)
+
+The long-term system separates:
+
+- **Public Website / Store / Cart** — the public commerce interface (everything documented above).
+- **Orders / Customers / Admin** — private operational data, once built.
+- **Big Red Brain** — a future AI layer operating only over explicitly-permitted business knowledge.
+- **Obsidian Vault** — a private business-knowledge source, never automatically public.
+
+Customer, cart, and order information must never automatically become public-facing AI context. No AI or Obsidian integration exists in this codebase yet.
 
 ## Rules for creating new components
 

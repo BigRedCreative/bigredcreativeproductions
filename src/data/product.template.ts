@@ -68,6 +68,10 @@ export const physicalProductExample: Product = {
       ],
     },
   ],
+  // EXAMPLE — "per-unit" scales with quantity (an extra color printed on
+  // every sticker); a "per-line" add-on would instead charge once no matter
+  // how many units are ordered (see serviceProductExample below).
+  addOns: [{ slug: "extra-color", label: "EXAMPLE — Extra print color", chargeType: "per-unit" }],
   pricing: {
     mode: "fixed-price",
     // basePrice intentionally omitted — no real, confirmed price yet.
@@ -115,11 +119,15 @@ export const serviceProductExample: Product = {
       description: "EXAMPLE PLACEHOLDER — what's included at this tier.",
     },
   ],
+  // EXAMPLE — "per-line" charges once for the whole line regardless of
+  // quantity (an extra revision round applies to the engagement, not
+  // per-unit); see physicalProductExample above for a "per-unit" example.
   addOns: [
     {
       slug: "extra-revision",
       label: "EXAMPLE — Extra revision round",
       description: "EXAMPLE PLACEHOLDER add-on description.",
+      chargeType: "per-line",
     },
   ],
   pricing: {

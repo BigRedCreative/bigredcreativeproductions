@@ -10,7 +10,9 @@ import ProductOptions from "@/components/ProductOptions";
 import ProductPackages from "@/components/ProductPackages";
 import ProductAddOns from "@/components/ProductAddOns";
 import ProductCTA from "@/components/ProductCTA";
+import ProductPurchasePanel from "@/components/ProductPurchasePanel";
 import { getPublishedProducts, getProductBySlug } from "@/data/products";
+import { isCartEligible } from "@/data/cart";
 
 // Only the slugs returned by generateStaticParams are valid — anything else
 // 404s instead of attempting an on-demand render. Draft and archived
@@ -51,6 +53,7 @@ export default async function ProductPage({ params }: ProductPageProps) {
   }
 
   const gallery = product.media.slice(1);
+  const eligible = isCartEligible(product);
 
   return (
     <main>
@@ -59,10 +62,16 @@ export default async function ProductPage({ params }: ProductPageProps) {
       {gallery.length > 0 && <ProductMedia media={gallery} />}
       <ProductDetails product={product} />
       <ProductPricing product={product} />
-      {product.options && product.options.length > 0 && <ProductOptions product={product} />}
-      {product.packages && product.packages.length > 0 && <ProductPackages product={product} />}
-      {product.addOns && product.addOns.length > 0 && <ProductAddOns product={product} />}
-      <ProductCTA product={product} />
+      {eligible ? (
+        <ProductPurchasePanel product={product} />
+      ) : (
+        <>
+          {product.options && product.options.length > 0 && <ProductOptions product={product} />}
+          {product.packages && product.packages.length > 0 && <ProductPackages product={product} />}
+          {product.addOns && product.addOns.length > 0 && <ProductAddOns product={product} />}
+          <ProductCTA product={product} />
+        </>
+      )}
       <Footer />
     </main>
   );

@@ -50,11 +50,18 @@ export type ProductOption = {
   required: boolean;
 };
 
+export const ADD_ON_CHARGE_TYPES = ["per-line", "per-unit"] as const;
+export type AddOnChargeType = (typeof ADD_ON_CHARGE_TYPES)[number];
+
 export type ProductAddOn = {
   slug: string;
   label: string;
   description?: string;
   price?: Money;
+  // Required so cart/order math is never ambiguous about how this add-on
+  // scales: "per-line" charges the price once per cart line regardless of
+  // quantity (e.g. rush production); "per-unit" multiplies by quantity.
+  chargeType: AddOnChargeType;
 };
 
 export type ProductPackage = {
@@ -126,6 +133,7 @@ validateProducts(products, {
   validStatuses: PRODUCT_STATUSES,
   validCategories: PRODUCT_CATEGORIES,
   validPurchaseModes: PURCHASE_MODES,
+  validAddOnChargeTypes: ADD_ON_CHARGE_TYPES,
 });
 
 // Builds the conventional path for a product media asset — see
