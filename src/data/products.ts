@@ -1,10 +1,11 @@
 import { validateProducts } from "./products.validate";
 import type { Media } from "./media";
 
-// Catalog/data foundation only — see CLAUDE.md "Catalog system (commerce
-// foundation)" for the full architecture writeup. No store route, cart,
-// checkout, or admin exists yet; this file just establishes the shape and
-// validation so those phases don't require a data-model migration later.
+// The product/catalog data model — see CLAUDE.md "Catalog system" and
+// "Store" for the full architecture writeup. The /store storefront reads
+// from this file; cart, checkout, payments, and an admin dashboard still
+// don't exist — this file (plus the read-only storefront UI) is the whole
+// system so far.
 
 export const PRODUCT_CATEGORIES = [
   "Design Services",
@@ -135,7 +136,8 @@ export function productImagePath(slug: string, filename: string): string {
   return `/images/products/${slug}/${filename}`;
 }
 
-// Planned public route shape — no /store or /store/[slug] route exists yet.
+export const STORE_INDEX_HREF = "/store";
+
 export function productHref(slug: string): string {
   return `/store/${slug}`;
 }

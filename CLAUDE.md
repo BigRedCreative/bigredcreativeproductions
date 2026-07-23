@@ -21,6 +21,8 @@ src/
     layout.tsx        — root HTML shell + metadata (sourced from config/site.ts)
     globals.css         — all CSS, plain stylesheet (no Tailwind/CSS Modules), design tokens in :root
     work/[slug]/page.tsx — dynamic, statically-generated project detail pages (see "Portfolio system")
+    store/page.tsx       — the /store catalog index (see "Store (storefront UI)")
+    store/[slug]/page.tsx — dynamic, statically-generated product detail pages (see "Store (storefront UI)")
 
   components/
     Header.tsx, Hero.tsx, Ticker.tsx, Manifesto.tsx, Statement.tsx,
@@ -28,11 +30,19 @@ src/
       — one component per homepage section; presentation + structure only
     ProjectHero.tsx, ProjectDetails.tsx, ProjectGallery.tsx, ProjectResults.tsx, ProjectNavigation.tsx
       — sections used only on /work/[slug] project detail pages
+    ServiceHero.tsx, ServiceCapabilities.tsx, ServiceDeliverables.tsx, ServiceProcess.tsx, ServiceCTA.tsx
+      — sections used only on /services/[slug] service detail pages
+    ProductHero.tsx, ProductMedia.tsx, ProductDetails.tsx, ProductPricing.tsx,
+    ProductOptions.tsx, ProductPackages.tsx, ProductAddOns.tsx, ProductCTA.tsx
+      — sections used only on /store/[slug] product detail pages; optional ones only
+        rendered by the page when the product actually has that data
     PortfolioGrid.tsx
       — client component: renders the homepage project grid + the category filter row
+    StoreGrid.tsx
+      — client component: renders the /store product grid + the category filter row
 
   components/ui/
-    Button.tsx, SectionHeading.tsx, ProjectCard.tsx, ServiceCard.tsx, Badge.tsx
+    Button.tsx, SectionHeading.tsx, ProjectCard.tsx, ServiceCard.tsx, ProductCard.tsx, Badge.tsx
       — shared, generic UI primitives with zero hardcoded business content
 
   data/
@@ -47,7 +57,9 @@ src/
     products.ts        — the catalog/product data model + helpers (see "Catalog system" below)
     products.validate.ts — runtime validation for product data, run automatically on import
     product.template.ts    — copy-paste starter template for a new product (not used by the app)
-    navigation.ts        — header nav links + CTA (hrefs derived from config/sections.ts)
+    money.ts          — centralized Money (integer-cent) formatting, see "Store (storefront UI)"
+    store.ts            — copy for the /store index page only (heading, intro, empty state)
+    navigation.ts        — header nav links + CTA (hrefs derived from config/sections.ts and products.ts)
 
   config/
     site.ts     — business identity: name, legal name, url, email, location, social links
@@ -60,7 +72,8 @@ src/
 - **Homepage text** (headlines, taglines, body copy, button labels, contact form labels) → `src/data/homepage.ts`
 - **Services list** → `src/data/services.ts`
 - **Portfolio projects** → `src/data/projects.ts`
-- **Catalog products** (not yet public — see "Catalog system") → `src/data/products.ts`
+- **Catalog products** (public at `/store` once `status: "published"` — see "Catalog system" and "Store (storefront UI)") → `src/data/products.ts`
+- **Store index page copy** (heading, intro, empty state) → `src/data/store.ts`
 - **Nav links / header CTA** → `src/data/navigation.ts`
 - **Business info** (name, email, location, social links) → `src/config/site.ts`
 - **Colors, spacing, shadows, borders, durations** → `src/app/globals.css` `:root` custom properties (mirrored for reference in `src/config/theme.ts`, but globals.css is the source of truth the browser actually uses)
@@ -205,7 +218,7 @@ Every service page's CTA (`ServiceCTA`) links to the homepage contact section (`
 
 ## Catalog system (commerce foundation)
 
-**Status: data/validation foundation only. No store UI, no `/store` route, no cart, no checkout, no payments, no admin dashboard exist yet.** This section documents the data model built in the commerce-foundation phase so later phases (store routes, then cart/checkout, then an admin) can build on it without another data migration.
+**Status: data model + read-only storefront UI. No cart, no checkout, no payments, no admin dashboard exist yet.** This section documents the data model built in the commerce-foundation phase; see "Store (storefront UI)" below for the public `/store` UI built on top of it in the following phase.
 
 ### Purpose and scope
 
@@ -278,22 +291,22 @@ Structural checks (integer, non-negative, valid enum) always apply. "Must eventu
 
 `Service` (the informational, inquiry-oriented marketing page at `/services/[slug]`) and `Product` (a purchasable catalog entry) are **fully separate systems** — this phase makes zero changes to `services.ts` or any service page component. A `Product` with `productType: "service"` may optionally set `relatedServiceSlug` to point at a real `Service.slug` (e.g. a future "Packaging Design — Standard" product would set `relatedServiceSlug: "packaging"`). This is a one-directional reference — `Service` has no knowledge of which products link to it — resolved on demand via `getProductsByServiceSlug(slug)` in `products.ts`. Rendering that relationship anywhere on an actual service page (e.g. a "View packages" link) is future work, not part of this phase; existing service pages remain exactly as they were in Phase 6.
 
-### Planned public route (not built yet)
+### Public route
 
 ```
-/store            — catalog index (planned; not built this phase)
-/store/[slug]      — individual product detail page (planned; not built this phase)
+/store            — catalog index, see "Store (storefront UI)" below
+/store/[slug]      — individual product detail page
 ```
 
-When approved, `/store/[slug]/page.tsx` should mirror `work/[slug]/page.tsx` and `services/[slug]/page.tsx` exactly: `generateStaticParams` from `getPublishedProducts()` (or an equivalent published-only getter), `generateMetadata` from `product.seo`, `notFound()` + `dynamicParams = false` so anything outside the static param list 404s instead of rendering on demand. `productHref(slug)` in `products.ts` already returns `/store/${slug}` so route code has a single source of truth to import once it exists.
+`/store/[slug]/page.tsx` mirrors `work/[slug]/page.tsx` and `services/[slug]/page.tsx` exactly: `generateStaticParams` from `getPublishedProducts()`, `generateMetadata` from `product.seo`, `notFound()` + `dynamicParams = false` so anything outside the static param list 404s instead of rendering on demand. `productHref(slug)` in `products.ts` returns `/store/${slug}`; `STORE_INDEX_HREF` (also in `products.ts`) is the single source of truth for the `/store` index path, used by both the primary nav and the route itself.
 
 ### How to add a product (once real content exists)
 
 1. Copy `physicalProductExample` or `serviceProductExample` from `src/data/product.template.ts` into the `products` array in `products.ts` and fill in real fields only. Leave `status: "draft"` until it's actually ready.
 2. Never invent pricing, deposits, turnaround guarantees, or client facts — leave those fields `undefined` until confirmed, exactly like the portfolio and services rules.
 3. If real media exists, drop it in `public/images/products/[slug]/` and reference it with `productImagePath(slug, filename)`; otherwise leave `media: []` rather than using a stock/placeholder photo (the hand-built branded-placeholder pattern documented under "Portfolio system" is the one sanctioned exception, if it's ever needed here).
-4. Run `npm run build` — the validator will fail loudly and list every problem if something's wrong with the data.
-5. Setting `status: "published"` will do nothing publicly visible until a `/store/[slug]` route is built and approved in a later phase — it only changes what a future public route/listing would include.
+4. Run `npm run build` — the validator will fail loudly and list every problem if something's wrong with the data. Note that once a product is `status: "published"`, the validator additionally requires it to have at least one `media` item and a real price appropriate to its `pricing.mode` (see "Pricing consistency rules" above) — keep it as `"draft"` until those are ready.
+5. Setting `status: "published"` makes the product publicly visible immediately: it appears in the `/store` grid and generates a real `/store/[slug]` page on the next build.
 
 ### Future database/admin migration notes
 
@@ -306,11 +319,56 @@ This model is deliberately shaped so it can move from flat TypeScript arrays int
 - Planned future admin capabilities this model is already compatible with: Add Product, Edit Product, Duplicate Product, change `slug` without changing `id`, Upload images/video, Reorder media, Set pricing, Set deposits, Manage packages, Manage options, Manage add-ons, Feature/unfeature, Publish, Archive. None of that UI exists yet — only the data shape it will eventually operate on.
 - Future cart/checkout integration points: `Product.pricing.mode` is what a future cart would branch on (inquiry → contact form, fixed-price/full-payment → direct checkout, deposit → partial payment flow, starting-price → likely routes to inquiry/quote first). None of that logic exists yet.
 
+## Store (storefront UI)
+
+**Status: public, read-only browsing UI. Still no cart, checkout, payments, or admin.** Built on top of the catalog system above — this section documents the UI layer specifically.
+
+### Route behavior
+
+- **`/store`** (`src/app/store/page.tsx`) — a plain static page (not a `[slug]` route), heading + intro from `src/data/store.ts`, then `StoreGrid` rendering **every published product** (not a featured-only subset — this is the full browse page, unlike the homepage's capped teaser sections).
+- **`/store/[slug]`** (`src/app/store/[slug]/page.tsx`) — statically generated only for published products, via the same `generateStaticParams`/`generateMetadata`/`notFound()`/`dynamicParams = false` pattern as `/work/[slug]` and `/services/[slug]`. Draft and archived products are never in the static param list, so their slugs 404 — there is no other gate to remember.
+
+### ProductCard
+
+`src/components/ui/ProductCard.tsx` — the whole card is one accessible link (the same stretched-link technique as `ProjectCard`/`ServiceCard`), always derived from `productHref(product.slug)`, never a hardcoded URL. It shows: `media[0]` as the primary image (or a video's `poster`, with a small rotated "VIDEO" badge — see below), category, a "Featured" badge when `product.featured` is true, title, a "Product"/"Service" label from `productType`, and a pricing summary from `formatPricingSummary()`. With no media at all, it falls back to the same typographic split-word treatment (`.project-art`) already used by `ProjectHero`/`ServiceHero` for content without photography — never a stock or generated photo.
+
+### Primary media convention
+
+`product.media[0]` is always the primary/hero item — used by both `ProductCard` and `ProductHero`. `ProductMedia` (the detail page's gallery section) renders `media.slice(1)` and is only rendered by the page when that slice is non-empty.
+
+### Video poster behavior
+
+No video player or playback exists anywhere in the app. Any `media` item with `type: "video"` renders its `poster` image (falling back to `src` only if `poster` is somehow missing, though the Phase 7 validator already requires a poster on every video item) with a small on-brand "VIDEO" badge overlaid (`.media-video-badge`, styled like the existing rotated sticker/stamp badges) so it's clear video content exists without pretending to play it.
+
+### Money formatting
+
+`src/data/money.ts` is the **only** place in the app that divides a `Money` (integer cents) value by 100. `formatMoney(cents)` uses `Intl.NumberFormat("en-US", { style: "currency", currency: "USD" })` (e.g. `50000 → "$500.00"`). `formatPricingSummary(pricing)` and `getPurchaseModeLabel(mode)` centralize every purchase-mode-aware pricing string (e.g. "Starting at $X", "$X deposit to start", "Inquire for pricing") so that branching on `pricing.mode` happens in exactly one file, not separately inside `ProductCard`, `ProductHero`, and `ProductPricing`.
+
+### Category filtering
+
+`StoreGrid.tsx` mirrors `PortfolioGrid.tsx` exactly: derives the distinct categories actually present among the products it received, renders "All" + one button per present category (only when there's more than one to filter by), filters client-side with no page reload, using plain `<button>`s with `aria-pressed` inside a `role="group"` — reuses the existing `.portfolio-filters`/`.portfolio-filter` CSS verbatim, since that pattern is already category-agnostic.
+
+### Empty catalog state
+
+With zero published products, `/store` shows a deliberately designed empty state (`.store-empty` — a bordered, on-brand block with a heading and message from `store.ts`), not a blank page or a bare "no results" line. No fake/seed products are ever added just to make the page look populated.
+
+### CTA behavior (inquiry-only for every purchase mode)
+
+Every product's CTA (`ProductCTA`) links to `/#contact` and uses `product.ctaLabel` directly from the data — the component never invents or branches on CTA copy itself. This is true regardless of `pricing.mode`: `inquiry`, `fixed-price`, `starting-price`, `deposit`, and `full-payment` all currently render the same non-transactional, contact-form-bound CTA. No cart, checkout, or payment integration exists yet.
+
+### Navigation anchor fix
+
+`src/data/navigation.ts`'s homepage-section links (`Services`, `Work`, `Studio`, `Contact`) now use an absolute `/#anchor` href instead of a bare `#anchor`. A bare `#services` only works while already on the homepage — clicked from `/store`, `/store/[slug]`, `/work/[slug]`, or `/services/[slug]`, it would just look for that id on the *current* page and silently fail. `/#services` always navigates to `/` first (a normal absolute link, no JavaScript involved), and the browser's native hash-scroll takes it from there. The `Store` nav item (added between `Work` and `Studio`) uses `STORE_INDEX_HREF` from `products.ts` instead of a literal string.
+
+### Future cart/checkout integration point
+
+Unchanged from the Phase 7 plan: `Product.pricing.mode` is what a future cart/checkout flow will branch on (`inquiry` → contact form as today, `fixed-price`/`full-payment` → direct checkout, `deposit` → partial-payment flow, `starting-price` → quote/inquiry first). `ProductCTA` is the single component that will need to grow that branching logic later — today it deliberately does not have it.
+
 ## Rules for creating new components
 
 - One component per homepage section, placed in `src/components/`.
 - Pull all copy from `src/data/homepage.ts` (or a dedicated data file) — do not hardcode business content, labels, or links inside a component.
-- Reuse `components/ui/Button`, `SectionHeading`, `ProjectCard`, `ServiceCard`, `Badge` for patterns that already exist; only add a new `ui/` primitive if a visual pattern repeats and isn't covered yet.
+- Reuse `components/ui/Button`, `SectionHeading`, `ProjectCard`, `ServiceCard`, `ProductCard`, `Badge` for patterns that already exist; only add a new `ui/` primitive if a visual pattern repeats and isn't covered yet.
 - If the component needs a page anchor, add it to `src/config/sections.ts` and reference `sectionAnchors` rather than hardcoding an `id`/`href` string.
 - Preserve existing CSS class names when reusing a visual pattern — the stylesheet is class-driven, not component-scoped.
 
