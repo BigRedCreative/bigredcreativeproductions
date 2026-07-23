@@ -13,6 +13,7 @@ export type ProductValidationOptions = {
   validStatuses: readonly string[];
   validCategories: readonly string[];
   validPurchaseModes: readonly string[];
+  validAddOnChargeTypes: readonly string[];
 };
 
 function isLocalImagePath(src: string): boolean {
@@ -36,7 +37,7 @@ function validateMoneyField(
 
 export function collectProductValidationErrors(
   products: Product[],
-  { validTypes, validStatuses, validCategories, validPurchaseModes }: ProductValidationOptions,
+  { validTypes, validStatuses, validCategories, validPurchaseModes, validAddOnChargeTypes }: ProductValidationOptions,
 ): string[] {
   const errors: string[] = [];
   const seenIds = new Set<string>();
@@ -259,6 +260,12 @@ export function collectProductValidationErrors(
 
         if (!addOn.label?.trim()) {
           errors.push(`${label}: ${field}.label is required`);
+        }
+
+        if (!validAddOnChargeTypes.includes(addOn.chargeType)) {
+          errors.push(
+            `${label}: ${field}.chargeType "${addOn.chargeType}" must be one of ${validAddOnChargeTypes.join(", ")}`,
+          );
         }
 
         validateMoneyField(addOn.price, `${field}.price`, label, errors);

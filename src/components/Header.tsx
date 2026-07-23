@@ -3,6 +3,7 @@ import { siteConfig } from "@/config/site";
 import { sectionAnchors } from "@/config/sections";
 import { primaryNav, headerCta } from "@/data/navigation";
 import Button from "./ui/Button";
+import CartNavLink from "./CartNavLink";
 
 export default function Header() {
   return (
@@ -23,6 +24,7 @@ export default function Header() {
             {item.label}
           </a>
         ))}
+        <CartNavLink />
       </nav>
       <Button href={headerCta.href} className="header-cta">
         {headerCta.label}
