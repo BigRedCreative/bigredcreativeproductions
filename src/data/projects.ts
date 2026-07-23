@@ -200,6 +200,44 @@ export const projects: Project[] = [
     featured: true,
     className: "project-dark",
     stamp: "LIVE CULTURE",
+    // Branded placeholder artwork — no real Crash the Stove media exists yet.
+    // Each file has a one-for-one replacement mapping documented in
+    // CLAUDE.md; swap the file at the same path/filename and nothing else
+    // needs to change.
+    heroImage: {
+      src: projectImagePath("crash-the-stove", "hero-placeholder.png"),
+      alt: "Crash the Stove branded portfolio placeholder featuring the event title, tagline, and Cleveland, Ohio event date, standing in for final hero artwork.",
+    },
+    gallery: [
+      {
+        src: projectImagePath("crash-the-stove", "main-event-campaign-placeholder.png"),
+        alt: "Crash the Stove branded portfolio placeholder marking the spot for main event campaign artwork, not yet published.",
+      },
+      {
+        src: projectImagePath("crash-the-stove", "artist-promotion-placeholder.png"),
+        alt: "Crash the Stove branded portfolio placeholder marking the spot for artist promotion campaign artwork, not yet published.",
+      },
+      {
+        src: projectImagePath("crash-the-stove", "vendor-networking-placeholder.png"),
+        alt: "Crash the Stove branded portfolio placeholder marking the spot for vendor and networking campaign artwork, not yet published.",
+      },
+      {
+        src: projectImagePath("crash-the-stove", "vip-ticket-placeholder.png"),
+        alt: "Crash the Stove branded portfolio placeholder marking the spot for VIP and ticket promotion artwork, not yet published.",
+      },
+      {
+        src: projectImagePath("crash-the-stove", "event-day-placeholder.png"),
+        alt: "Crash the Stove branded portfolio placeholder marking the spot for event-day signage, location, and setup creative, not yet published.",
+      },
+      {
+        src: projectImagePath("crash-the-stove", "photography-placeholder.png"),
+        alt: "Crash the Stove branded portfolio placeholder for future event photography, not yet published.",
+      },
+      {
+        src: projectImagePath("crash-the-stove", "video-placeholder.png"),
+        alt: "Crash the Stove branded portfolio placeholder for a future event recap video, not yet published.",
+      },
+    ],
     credits: [
       {
         role: "Event Branding, Creative Direction & Promotional Design",

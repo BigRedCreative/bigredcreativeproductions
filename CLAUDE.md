@@ -124,6 +124,28 @@ Use `projectImagePath(slug, filename)` from `src/data/projects.ts` to build thes
 4. Set `featured: true` if it should appear on the homepage (remove/flip `status` to publish it, or leave `status: "draft"` until it's ready).
 5. Run `npm run build` — the new `/work/[slug]` route, its metadata, its category filter button, and Previous/Next links all generate automatically. No other file needs to change. If something's wrong with the data, the build will fail and list exactly what.
 
+### Branded portfolio placeholders (in use for Crash the Stove)
+
+When a project's case study is ready before real photography/artwork is, it's acceptable to use **hand-built, clearly-labeled branded placeholder graphics** instead of leaving `heroImage`/`gallery` undefined — useful when the gallery layout itself needs to be demonstrated, not just the copy. Rules for these:
+
+- They must look like intentional design-system placeholders (bold typography, on-brand color/texture, a visible "PORTFOLIO PLACEHOLDER" stamp) — never like real event/product photography.
+- Alt text must say outright that the image is a placeholder (see the Crash the Stove entries in `src/data/projects.ts` for the pattern), never described as if it were real photography.
+- No stock imagery, no AI-generated photorealistic images, no invented event/product facts baked into the graphic.
+- Each placeholder file keeps a **stable filename** so a real asset can replace it later by overwriting the same path — no `projects.ts` change required when the swap happens, exactly like the SP Juices `hero.png`/`logo.png` overwrites.
+
+**Crash the Stove replacement map** (`public/images/projects/crash-the-stove/`) — when real assets arrive, replace the file at each path in place; no code changes needed unless the final asset count/roles differ from this list:
+
+| Current placeholder file | Replace with |
+|---|---|
+| `hero-placeholder.png` | Final hero artwork or photo |
+| `main-event-campaign-placeholder.png` | Main event flyer/campaign graphic |
+| `artist-promotion-placeholder.png` | Artist campaign graphics |
+| `vendor-networking-placeholder.png` | Vendor/networking campaign graphics |
+| `vip-ticket-placeholder.png` | Ticket/VIP artwork |
+| `event-day-placeholder.png` | Signage/setup/location graphics |
+| `photography-placeholder.png` | Real event photography |
+| `video-placeholder.png` | Future event recap media — **still image only today**; the portfolio architecture is image-only and would need to expand to support mixed image/video galleries before this can hold an actual video |
+
 ## Rules for creating new components
 
 - One component per homepage section, placed in `src/components/`.
