@@ -180,21 +180,36 @@ export const projects: Project[] = [
   },
   {
     slug: "crash-the-stove",
-    title: "Crash The Stove",
-    shortTitle: "Crash The Stove",
+    title: "Crash the Stove",
+    shortTitle: "Crash the Stove",
     category: "Events",
-    services: ["Event identity", "Promotions", "Production"],
+    services: [
+      "Event Branding",
+      "Graphic Design",
+      "Creative Direction",
+      "Event Promotion",
+      "Social Media Campaign Design",
+      "Artist Promotion",
+      "Vendor & Networking Promotion",
+    ],
     summary:
-      "A culture-first event campaign spanning artist promotion, vendor communication and live-event graphics.",
+      "A flexible event branding and promotional campaign for Crash the Stove, a Cleveland culture, music, food, and networking event, spanning artist promotion, vendor announcements, and event-day communication under one recognizable visual identity.",
     fullDescription:
-      "Crash The Stove called for a culture-first event campaign that could carry artist promotion, vendor communication and live-event graphics under one identity. The work spanned event identity, promotions and production, keeping the visual language consistent from the first announcement through day-of signage.",
+      "Crash the Stove was a Cleveland, Ohio culture, music, food, entrepreneurship, and networking event held Saturday, July 18, 2026 from 12 PM to 8 PM, combining live music and artist appearances with vendors, creators, food, and community-focused programming. Big Red Creative Productions developed the creative and promotional campaign surrounding the event, building a visual system flexible enough to carry many different kinds of announcements — main event promotion, artist announcements and spotlights, vendor and networking announcements, VIP promotion, ticket calls-to-action, location and setup information, event-day updates, and social media content — while staying instantly recognizable as one connected campaign. The visual direction drew on hip-hop culture, concert promotion, and Cleveland's own creative energy, built around the recurring relationship between the CRASH THE STOVE name and stovetop and cooking imagery: industrial stovetops, cooking pots, glowing burners, smoke, and sparks, rendered in bold oversized typography and dramatic event lighting across a palette of red, orange, purple, black, and gold. Individual artist graphics carried their own color treatments while staying tied to the larger system — 414junglebaby's spotlight used an energetic red, orange, and gold direction, Tay B's used a Detroit-inspired blue, red, and white palette, Eastside Ivo's host/MC treatment used purple, and DJ Eazzy Bankz's used neon-green rave and DJ-booth imagery. Babyfxce E and Los x Nutty were also promoted as part of the campaign, including a Babyfxce E graphic built around the line \"BABYFXCE E PULLIN' UP & SHOWING LOVE!\" Promotional messaging positioned Crash the Stove as one of the biggest culture and networking events of the summer — campaign language reflecting the event's marketing, not a measured claim. The result is a system that demonstrates how one flexible visual campaign can scale from major promotional graphics to artist-specific creative to vendor and networking announcements to day-of operational information, without fracturing into disconnected pieces.",
+    year: "2026",
     featured: true,
     className: "project-dark",
     stamp: "LIVE CULTURE",
+    credits: [
+      {
+        role: "Event Branding, Creative Direction & Promotional Design",
+        name: "Big Red Creative Productions",
+      },
+    ],
     seo: {
-      title: "Crash The Stove — Event Identity & Promotions | Big Red Creative Productions",
+      title: "Crash the Stove Event Branding & Promotion | Big Red Creative Productions",
       description:
-        "A culture-first event campaign spanning artist promotion, vendor communication and live-event graphics.",
+        "Explore the Crash the Stove event campaign by Big Red Creative Productions, featuring event branding, artist promotion, social media graphics, vendor promotion, and creative direction for a Cleveland culture and networking event.",
     },
   },
   {
