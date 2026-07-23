@@ -146,6 +146,21 @@ When a project's case study is ready before real photography/artwork is, it's ac
 | `photography-placeholder.png` | Real event photography |
 | `video-placeholder.png` | Future event recap media — **still image only today**; the portfolio architecture is image-only and would need to expand to support mixed image/video galleries before this can hold an actual video |
 
+**Mental Town Exotics replacement map** (`public/images/projects/mental-town-exotics/`) — same one-for-one file-overwrite pattern:
+
+| Current placeholder file | Replace with |
+|---|---|
+| `hero-placeholder.png` | Final hero artwork |
+| `brand-identity-placeholder.png` | Final logo/identity presentation |
+| `packaging-system-placeholder.png` | Final packaging lineup |
+| `label-design-placeholder.png` | Final label designs |
+| `product-mockups-placeholder.png` | Real product mockups/photos |
+| `brand-details-placeholder.png` | Typography/colors/details |
+| `print-applications-placeholder.png` | Real print applications |
+| `social-media-placeholder.png` | Real campaign graphics |
+| `photography-placeholder.png` | Real photography |
+| `video-placeholder.png` | Future video content — still image only today, same architecture note as above |
+
 ## Rules for creating new components
 
 - One component per homepage section, placed in `src/components/`.

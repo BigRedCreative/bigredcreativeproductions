@@ -269,6 +269,78 @@ export const projects: Project[] = [
         "High-impact packaging systems designed for shelf presence, brand recall and production readiness.",
     },
   },
+  {
+    slug: "mental-town-exotics",
+    title: "Mental Town Exotics",
+    shortTitle: "Mental Town Exotics",
+    category: "Packaging",
+    services: [
+      "Brand Identity",
+      "Graphic Design",
+      "Packaging Design",
+      "Label Design",
+      "Print Production",
+    ],
+    summary:
+      "A premium exotic packaging and branding system for Mental Town Exotics, featuring a purple and black visual direction built around a white straitjacket mascot concept across labels, packaging, and print-ready graphics.",
+    fullDescription:
+      "Mental Town Exotics is a premium exotic packaging and branding project built around a purple and black visual direction. The identity centers on a white straitjacket mascot concept, including a purple afro variation, carried across a packaging system covering infused preroll packaging and 1 Gram Live Resin packaging. The system also includes a round Lemon Headz sticker, QR-code packaging layouts, and print-ready label work. The project spans brand identity, graphic design, packaging design, label design, and print production, building a cohesive, shelf-ready system across the product line.",
+    year: "2026",
+    featured: false,
+    className: "project-dark",
+    stamp: "COMING SOON",
+    // Branded placeholder artwork — no real Mental Town Exotics media exists
+    // yet. Each file has a one-for-one replacement mapping documented in
+    // CLAUDE.md; swap the file at the same path/filename and nothing else
+    // needs to change.
+    heroImage: {
+      src: projectImagePath("mental-town-exotics", "hero-placeholder.png"),
+      alt: "Mental Town Exotics branded portfolio placeholder featuring the project title and branding & packaging system tagline, standing in for final hero artwork.",
+    },
+    gallery: [
+      {
+        src: projectImagePath("mental-town-exotics", "brand-identity-placeholder.png"),
+        alt: "Mental Town Exotics branded portfolio placeholder marking the spot for final brand identity and logo presentation, not yet published.",
+      },
+      {
+        src: projectImagePath("mental-town-exotics", "packaging-system-placeholder.png"),
+        alt: "Mental Town Exotics branded portfolio placeholder marking the spot for the final packaging system lineup, not yet published.",
+      },
+      {
+        src: projectImagePath("mental-town-exotics", "label-design-placeholder.png"),
+        alt: "Mental Town Exotics branded portfolio placeholder marking the spot for final label designs, not yet published.",
+      },
+      {
+        src: projectImagePath("mental-town-exotics", "product-mockups-placeholder.png"),
+        alt: "Mental Town Exotics branded portfolio placeholder marking the spot for real product mockups and photos, not yet published.",
+      },
+      {
+        src: projectImagePath("mental-town-exotics", "brand-details-placeholder.png"),
+        alt: "Mental Town Exotics branded portfolio placeholder marking the spot for typography, color, and brand detail close-ups, not yet published.",
+      },
+      {
+        src: projectImagePath("mental-town-exotics", "print-applications-placeholder.png"),
+        alt: "Mental Town Exotics branded portfolio placeholder marking the spot for real print application examples, not yet published.",
+      },
+      {
+        src: projectImagePath("mental-town-exotics", "social-media-placeholder.png"),
+        alt: "Mental Town Exotics branded portfolio placeholder marking the spot for real social media campaign graphics, not yet published.",
+      },
+      {
+        src: projectImagePath("mental-town-exotics", "photography-placeholder.png"),
+        alt: "Mental Town Exotics branded portfolio placeholder for future product photography, not yet published.",
+      },
+      {
+        src: projectImagePath("mental-town-exotics", "video-placeholder.png"),
+        alt: "Mental Town Exotics branded portfolio placeholder for future video content, not yet published.",
+      },
+    ],
+    seo: {
+      title: "Mental Town Exotics Branding & Packaging | Big Red Creative Productions",
+      description:
+        "Explore the Mental Town Exotics branding and packaging work by Big Red Creative Productions, including label design, packaging systems, print-ready graphics, and product identity development.",
+    },
+  },
 ];
 
 // Fails loudly (build or dev server) with every problem listed at once if
