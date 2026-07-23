@@ -39,9 +39,14 @@ src/
     homepage.ts    — all homepage copy (hero, ticker, manifesto, statement, studio,
                        process, contact form labels, footer wording)
     services.ts      — the services list (title/description/tags)
+    services.validate.ts — runtime validation for service data, run automatically on import
     projects.ts        — the full portfolio data model + helpers (see "Portfolio system" below)
     projects.validate.ts — runtime validation for project data, run automatically on import
     project.template.ts    — copy-paste starter template for a new project (not used by the app)
+    media.ts         — shared Media type (image/video) for the catalog system
+    products.ts        — the catalog/product data model + helpers (see "Catalog system" below)
+    products.validate.ts — runtime validation for product data, run automatically on import
+    product.template.ts    — copy-paste starter template for a new product (not used by the app)
     navigation.ts        — header nav links + CTA (hrefs derived from config/sections.ts)
 
   config/
@@ -55,6 +60,7 @@ src/
 - **Homepage text** (headlines, taglines, body copy, button labels, contact form labels) → `src/data/homepage.ts`
 - **Services list** → `src/data/services.ts`
 - **Portfolio projects** → `src/data/projects.ts`
+- **Catalog products** (not yet public — see "Catalog system") → `src/data/products.ts`
 - **Nav links / header CTA** → `src/data/navigation.ts`
 - **Business info** (name, email, location, social links) → `src/config/site.ts`
 - **Colors, spacing, shadows, borders, durations** → `src/app/globals.css` `:root` custom properties (mirrored for reference in `src/config/theme.ts`, but globals.css is the source of truth the browser actually uses)
@@ -196,6 +202,109 @@ Every service page's CTA (`ServiceCTA`) links to the homepage contact section (`
 1. Edit or add an entry directly in the `services` array in `src/data/services.ts`. There's no separate template file (unlike portfolio's `project.template.ts`) since the schema is small enough to copy an existing entry.
 2. If you have real images, drop them in `public/images/services/[slug]/` and reference them with `serviceImagePath(slug, filename)`. Otherwise leave `heroImage`/`gallery` undefined — `ServiceHero` falls back to the same typographic `.project-art` treatment used by projects without photography.
 3. Run `npm run build` — the new `/services/[slug]` route, its metadata, and its homepage row all generate automatically.
+
+## Catalog system (commerce foundation)
+
+**Status: data/validation foundation only. No store UI, no `/store` route, no cart, no checkout, no payments, no admin dashboard exist yet.** This section documents the data model built in the commerce-foundation phase so later phases (store routes, then cart/checkout, then an admin) can build on it without another data migration.
+
+### Purpose and scope
+
+The catalog (`src/data/products.ts`) is a separate system from the portfolio (`projects.ts`) and services (`services.ts`) — it exists to eventually support **purchasable offerings**: both physical products (stickers, labels, printed materials, merchandise) and purchasable creative-service packages (e.g. a priced "Packaging Design — Standard" offering). `products.ts` ships with an intentionally **empty** `products` array — no live products exist yet, and none should be added without real, confirmed content and pricing.
+
+### id vs. slug — read this before adding a product
+
+Every `Product` has two identifiers with different jobs:
+
+- **`id`** — the permanent internal identity. Never derive it from the title or slug, never change it once assigned, never reuse a retired one. A future order/admin/database system will reference `product.id`, not `product.slug`.
+- **`slug`** — the editable public URL identity (`/store/[slug]`, once that route exists). A product can be renamed/re-slugged later without breaking anything that already referenced it by `id`.
+
+This split exists specifically so a future rename doesn't silently break historical order references once real orders exist. For the current TypeScript-file phase, `id` can be any human-readable stable string (e.g. `prod_packaging_design_standard`) or a UUID-style string — it just has to be unique and never regenerated from other fields. Both `id` and `slug` are validated for uniqueness independently.
+
+### Schema
+
+`Product` fields: `id`, `slug`, `productType` (`"physical" | "service"`), `title`, `shortTitle`, `summary`, `fullDescription`, `status` (**required**, see below), `featured`, `category` (one of `PRODUCT_CATEGORIES`), `media` (ordered `Media[]`, see below), optional `options`/`packages`/`addOns`, `pricing` (`ProductPricing`), optional `relatedServiceSlug`, `ctaLabel`, `seo`.
+
+- **`PRODUCT_CATEGORIES`**: Design Services, Printing, Stickers & Labels, Event & Promotional, Merchandise, Other. Kept as a single fixed, centralized list (like `PROJECT_CATEGORIES`) specifically so it can be migrated into an admin-managed table later without touching every product.
+- **`ProductOption`** (`key`, `label`, `values: ProductOptionValue[]`, `required`) models generic configurable choices — size, quantity, finish, material, package tier, turnaround, etc. It is intentionally not sticker-specific. Each `ProductOptionValue` (`label`, `value`, optional `priceDelta`) may carry a *signed* price adjustment in cents (a smaller size can legitimately cost less than the base).
+- **`ProductPackage`** (`slug`, `label`, `description`, optional `price`/`startingPrice`/`deliverables`/`turnaround`) models tiered offerings like Basic/Standard/Premium under a single product.
+- **`ProductAddOn`** (`slug`, `label`, optional `description`/`price`) models optional extras (e.g. an extra revision round, rush production).
+- **`ProductPricing`** (`mode: PurchaseMode`, optional `basePrice`/`startingPrice`/`depositAmount`/`salePrice`/`pricingNote`) — the product's top-level/summary pricing, independent of any per-package pricing.
+- **`Money`** is `type Money = number` — **always integer cents**, never a float dollar amount. There is no currency field yet; USD is implied site-wide.
+
+### Media model
+
+`src/data/media.ts` defines a `Media` type shared only by the catalog — deliberately **not** retrofitted onto `ProjectImage`/`ServiceImage`, which stay exactly as they are on the existing, content-approved portfolio and services systems.
+
+```ts
+type Media = {
+  type: "image" | "video";
+  src: string;
+  alt: string;      // required for both image and video
+  poster?: string;   // required by validation when type is "video"
+  caption?: string;   // optional, distinct from alt (accessibility text vs. display caption)
+};
+```
+
+`Product.media` is a single **ordered array**, not a hero/gallery split — `media[0]` is the primary/hero item by convention. This is a deliberate departure from the Project/Service pattern, chosen because a future admin needs to let someone drag-and-drop reorder media directly; a flat ordered array maps onto that far more naturally than a fixed hero+gallery shape. No video player exists yet — the type only needs to be correct, not renderable.
+
+### Status lifecycle — required, not optional
+
+```ts
+type ProductStatus = "draft" | "published" | "archived";
+```
+
+Unlike `Project.status` (optional, where omission means published), **`Product.status` is a required field with no implicit default.** A product object that omits `status` is a TypeScript error, not a silent "published" default. This is intentional: it prevents a newly created product from accidentally going public because someone forgot to set a field. A future admin should always default a newly created product to `"draft"`.
+
+- `draft` — never appears in any public listing or route, once those exist.
+- `published` — the only status that will generate a public `/store/[slug]` route.
+- `archived` — also excluded from public listings/routes, but distinct from `draft` for a future admin's sake (was live and got retired, vs. never went live). `getProductById()` still finds archived (and draft) products by their permanent `id`, since a future order could still reference one.
+
+### Pricing consistency rules
+
+Structural checks (integer, non-negative, valid enum) always apply. "Must eventually have a real price" checks apply **only once a product is `published`** — drafts can freely omit real numbers while an offering is still being defined:
+
+- `inquiry` — never requires a price.
+- `fixed-price` / `full-payment` — a published product in this mode requires `pricing.basePrice`.
+- `starting-price` — a published product in this mode requires `pricing.startingPrice`.
+- `deposit` — a published product in this mode requires `pricing.depositAmount` and at least one of `basePrice`/`startingPrice`.
+
+### Validation
+
+`src/data/products.validate.ts` exports `validateProducts()`, called at module load in `products.ts` exactly like `validateProjects()`/`validateServices()` — a bad entry fails `npm run dev`/`npm run build` immediately, listing every problem at once, not just the first. It checks (non-exhaustive): unique `id`, unique `slug`, valid `productType`/`status`/`category`/`pricing.mode`, non-empty `title`/`summary`, required `seo.title`/`seo.description`, the pricing-consistency rules above, non-negative integer-cent values on every money field (`priceDelta` is the one exception — it may be negative, but must still be a whole integer), image/video `alt` required, video `poster` required, local-only media paths scoped under that product's own `/images/products/[slug]/` folder, no duplicate media `src` within a product, no duplicate `options[].key`/`packages[].slug`/`addOns[].slug` within a product, and — if set — `relatedServiceSlug` must match a real `Service.slug`. An empty `products` array is valid; the catalog is allowed to start empty.
+
+`PRODUCT_TYPES`/`PRODUCT_STATUSES`/`PRODUCT_CATEGORIES`/`PURCHASE_MODES` are passed into `validateProducts()` as parameters rather than imported by `products.validate.ts`, mirroring `projects.validate.ts`'s pattern — this avoids a circular import, since `products.ts` calls `validateProducts()` with its own data at module load. `services` **is** imported directly into `products.validate.ts` (safe: `services.ts` never imports from `products.ts`, so there's no cycle) to check `relatedServiceSlug` against real service slugs.
+
+### Service ↔ Product relationship
+
+`Service` (the informational, inquiry-oriented marketing page at `/services/[slug]`) and `Product` (a purchasable catalog entry) are **fully separate systems** — this phase makes zero changes to `services.ts` or any service page component. A `Product` with `productType: "service"` may optionally set `relatedServiceSlug` to point at a real `Service.slug` (e.g. a future "Packaging Design — Standard" product would set `relatedServiceSlug: "packaging"`). This is a one-directional reference — `Service` has no knowledge of which products link to it — resolved on demand via `getProductsByServiceSlug(slug)` in `products.ts`. Rendering that relationship anywhere on an actual service page (e.g. a "View packages" link) is future work, not part of this phase; existing service pages remain exactly as they were in Phase 6.
+
+### Planned public route (not built yet)
+
+```
+/store            — catalog index (planned; not built this phase)
+/store/[slug]      — individual product detail page (planned; not built this phase)
+```
+
+When approved, `/store/[slug]/page.tsx` should mirror `work/[slug]/page.tsx` and `services/[slug]/page.tsx` exactly: `generateStaticParams` from `getPublishedProducts()` (or an equivalent published-only getter), `generateMetadata` from `product.seo`, `notFound()` + `dynamicParams = false` so anything outside the static param list 404s instead of rendering on demand. `productHref(slug)` in `products.ts` already returns `/store/${slug}` so route code has a single source of truth to import once it exists.
+
+### How to add a product (once real content exists)
+
+1. Copy `physicalProductExample` or `serviceProductExample` from `src/data/product.template.ts` into the `products` array in `products.ts` and fill in real fields only. Leave `status: "draft"` until it's actually ready.
+2. Never invent pricing, deposits, turnaround guarantees, or client facts — leave those fields `undefined` until confirmed, exactly like the portfolio and services rules.
+3. If real media exists, drop it in `public/images/products/[slug]/` and reference it with `productImagePath(slug, filename)`; otherwise leave `media: []` rather than using a stock/placeholder photo (the hand-built branded-placeholder pattern documented under "Portfolio system" is the one sanctioned exception, if it's ever needed here).
+4. Run `npm run build` — the validator will fail loudly and list every problem if something's wrong with the data.
+5. Setting `status: "published"` will do nothing publicly visible until a `/store/[slug]` route is built and approved in a later phase — it only changes what a future public route/listing would include.
+
+### Future database/admin migration notes
+
+This model is deliberately shaped so it can move from flat TypeScript arrays into persistent database records managed through a future **Big Red Admin** without a redesign:
+
+- Every entity uses explicit, structured fields (no nested functions/closures, no `Map`/`Set` in the data itself) — a straightforward shape for JSON serialization or a relational table.
+- `id` is the stable primary-key candidate; `slug` is a renameable, independently-unique secondary field — exactly the split a real database and a real admin "change slug without changing ID" feature need.
+- `PRODUCT_CATEGORIES` is centralized in one place specifically so it can become an admin-managed table (or a seeded lookup table) instead of a hardcoded list.
+- `media` being a flat ordered array (not hero/gallery) is specifically meant to survive a future "upload media / drag to reorder" admin UI without a shape change.
+- Planned future admin capabilities this model is already compatible with: Add Product, Edit Product, Duplicate Product, change `slug` without changing `id`, Upload images/video, Reorder media, Set pricing, Set deposits, Manage packages, Manage options, Manage add-ons, Feature/unfeature, Publish, Archive. None of that UI exists yet — only the data shape it will eventually operate on.
+- Future cart/checkout integration points: `Product.pricing.mode` is what a future cart would branch on (inquiry → contact form, fixed-price/full-payment → direct checkout, deposit → partial payment flow, starting-price → likely routes to inquiry/quote first). None of that logic exists yet.
 
 ## Rules for creating new components
 
