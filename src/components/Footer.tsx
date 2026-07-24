@@ -1,22 +1,28 @@
 import Image from "next/image";
-import { siteConfig } from "@/config/site";
 import { sectionAnchors } from "@/config/sections";
 import { footer } from "@/data/homepage";
+import { getSiteSettings } from "@/server/queries/site-content";
 
-export default function Footer() {
+// Database-backed as of Phase 14 — logo path, email, legal name, and
+// tagline now come from the admin-editable site_settings table, field-
+// level-fallback-safe against src/config/site.ts. backToTopLabel stays a
+// static UI label from homepage.ts — not admin-editable content.
+export default async function Footer() {
+  const settings = await getSiteSettings();
+
   return (
     <footer>
       <Image
-        src="/brand/logo-white.svg"
-        alt={siteConfig.name}
+        src={settings.logoWhiteSrc}
+        alt={settings.siteName}
         width={1600}
         height={500}
         unoptimized
       />
-      <a href={`mailto:${siteConfig.email}`}>{siteConfig.email}</a>
+      <a href={`mailto:${settings.contactEmail}`}>{settings.contactEmail}</a>
       <div className="footer-bottom">
-        <span>{siteConfig.legalName}</span>
-        <span>{footer.tagline}</span>
+        <span>{settings.legalName}</span>
+        <span>{settings.tagline}</span>
         <a href={`#${sectionAnchors.hero}`}>{footer.backToTopLabel}</a>
       </div>
     </footer>
