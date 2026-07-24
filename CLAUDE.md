@@ -21,13 +21,13 @@ src/
     layout.tsx        — root HTML shell + metadata (sourced from config/site.ts)
     globals.css         — all CSS, plain stylesheet (no Tailwind/CSS Modules), design tokens in :root
     work/[slug]/page.tsx — dynamic, statically-generated project detail pages (see "Portfolio system")
-    store/page.tsx       — the /store catalog index (see "Store (storefront UI)")
-    store/[slug]/page.tsx — dynamic, statically-generated product detail pages (see "Store (storefront UI)")
+    store/page.tsx       — the /store catalog index, ISR — see "Product admin + database-backed catalog"
+    store/[slug]/page.tsx — product detail pages, ISR + on-demand revalidation — see "Product admin + database-backed catalog"
     cart/page.tsx        — the /cart route (see "Cart (transactional foundation)")
     checkout/page.tsx      — the /checkout route (see "Checkout + Order foundation")
-    api/orders/route.ts     — POST /api/orders Route Handler, see "Backend + database foundation"
+    api/orders/route.ts     — POST /api/orders Route Handler, verifies against Neon — see "Product admin + database-backed catalog"
     api/auth/[...nextauth]/route.ts — Auth.js's own GET/POST handlers, re-exported from src/auth.ts
-    admin/               — the protected admin system, see "Admin foundation" below
+    admin/               — the protected admin system, see "Admin foundation" and "Product admin + database-backed catalog" below
 
   components/
     Header.tsx, Hero.tsx, Ticker.tsx, Manifesto.tsx, Statement.tsx,
@@ -39,10 +39,12 @@ src/
       — sections used only on /services/[slug] service detail pages
     ProductHero.tsx, ProductMedia.tsx, ProductDetails.tsx, ProductPricing.tsx,
     ProductOptions.tsx, ProductPackages.tsx, ProductAddOns.tsx, ProductCTA.tsx, ProductPurchasePanel.tsx
-      — sections used only on /store/[slug] product detail pages; optional ones only
-        rendered by the page when the product actually has that data. ProductOptions/
-        ProductPackages/ProductAddOns accept optional controlled-selection props so
-        ProductPurchasePanel can reuse them interactively — see "Cart"
+      — sections used on /store/[slug] product detail pages (ProductHero/ProductMedia
+        also reused, unmodified, by the admin draft preview — see "Product admin +
+        database-backed catalog"); optional ones only rendered by the page when the
+        product actually has that data. ProductOptions/ProductPackages/ProductAddOns
+        accept optional controlled-selection props so ProductPurchasePanel can reuse
+        them interactively — see "Cart"
     PortfolioGrid.tsx
       — client component: renders the homepage project grid + the category filter row
     StoreGrid.tsx
@@ -57,6 +59,18 @@ src/
     Button.tsx, SectionHeading.tsx, ProjectCard.tsx, ServiceCard.tsx, ProductCard.tsx, Badge.tsx
       — shared, generic UI primitives with zero hardcoded business content
 
+  components/admin/
+    AdminSidebar.tsx, AdminHeader.tsx, AdminPagination.tsx, StatusBadge.tsx,
+    OrdersFilterBar.tsx, CustomersFilterBar.tsx, ProductsFilterBar.tsx
+      — the admin shell + read-only list/filter UI, see "Admin foundation"
+    ProductForm.tsx
+      — the create/edit product form (client component — every <select> is a
+        controlled component; see "Product admin + database-backed catalog" →
+        "A controlled-select bug, and why every admin <select> is controlled now")
+    ProductOptionsEditor.tsx, ProductPackagesEditor.tsx, ProductAddOnsEditor.tsx, ProductMediaEditor.tsx
+      — repeatable array-field sub-editors used inside ProductForm, each serializing its
+        local state into one hidden JSON form field on submit
+
   data/
     homepage.ts    — all homepage copy (hero, ticker, manifesto, statement, studio,
                        process, contact form labels, footer wording)
@@ -66,9 +80,12 @@ src/
     projects.validate.ts — runtime validation for project data, run automatically on import
     project.template.ts    — copy-paste starter template for a new project (not used by the app)
     media.ts         — shared Media type (image/video) for the catalog system
-    products.ts        — the catalog/product data model + helpers (see "Catalog system" below)
-    products.validate.ts — runtime validation for product data, run automatically on import
-    product.template.ts    — copy-paste starter template for a new product (not used by the app)
+    products.ts        — Product TYPES, constants, and pure helpers only (id/slug helpers, slugify()).
+                          No product data and no query functions live here as of Phase 13 — see
+                          "Product admin + database-backed catalog" for why, and src/server/queries/catalog.ts
+                          for the real, database-backed reads
+    products.validate.ts — collectProductValidationErrors(): the one product validator, reused by both
+                          admin mutations (runtime) and, historically, build-time array checks
     money.ts          — centralized Money (integer-cent) formatting, see "Store (storefront UI)"
     store.ts            — copy for the /store index page only (heading, intro, empty state)
     cart.ts            — CartItem/CartOptionSelection/CartPackageSelection/CartAddOnSelection
@@ -87,18 +104,30 @@ src/
     sections.ts     — homepage section order, anchor IDs, enabled/disabled flags
 
   db/
-    schema.ts   — Drizzle table/sequence definitions (products, customers, orders, order_lines,
-                   order_number_seq) — see "Backend + database foundation"
+    schema.ts   — Drizzle table/sequence definitions (admin_users, audit_log, products, customers,
+                   orders, order_lines, order_number_seq) — see "Backend + database foundation" and
+                   "Product admin + database-backed catalog"
     index.ts      — getDb(): lazy, server-only Neon/Drizzle client, throws only when actually called
 
   server/
-    product-source.ts     — getAuthoritativeProduct(): the one swappable product-lookup boundary
+    product-source.ts     — getAuthoritativeProduct(): resolves from Neon (src/server/queries/catalog.ts)
     verify-configuration.ts — strict server-side package/option/add-on verification for API requests
     create-order.ts       — the atomic Customer+Order+OrderLine transaction, idempotency handling
     require-admin-user.ts   — requireAdminUser(): the one real admin authorization boundary
     is-uuid.ts             — shared route-param validation, used before any uuid-typed DB lookup
+    is-unique-violation.ts   — shared Postgres 23505 detection, used by create-order.ts and mutate-product.ts
+    dollars-to-cents.ts      — the one place an admin-entered dollar string becomes authoritative integer cents
+    build-product-form.ts    — parses admin product-form FormData into a candidate Product (shape only,
+                          not business validation — see "Product admin + database-backed catalog")
+    mutate-product.ts       — createProductAction()/updateProductAction(): the only place a product row
+                          is written; each independently calls requireAdminUser(), writes a transactional
+                          audit_log entry, and revalidates the affected storefront routes
+    audit-log.ts           — recordAuditEvent(): the one place any admin write records who/what/when
     queries/orders.ts        — server-only, read-only admin order queries (list/detail/status counts)
     queries/customers.ts       — server-only, read-only admin customer queries (list/detail/count)
+    queries/catalog.ts        — server-only, database-backed product reads: getPublishedProducts(),
+                          getProductBySlug(), getProductById(), listProducts() (admin), etc. — the
+                          ONE place anything in the app reads a Product from Neon
 
   auth.ts                — Auth.js v5 config (Google OAuth, JWT sessions, no adapter tables)
   proxy.ts                — Next.js 16's proxy convention (not middleware.ts) — admin fast-path redirect only
@@ -112,7 +141,7 @@ CLI-only files — see "Backend + database foundation" → "Database migrations"
 - **Homepage text** (headlines, taglines, body copy, button labels, contact form labels) → `src/data/homepage.ts`
 - **Services list** → `src/data/services.ts`
 - **Portfolio projects** → `src/data/projects.ts`
-- **Catalog products** (public at `/store` once `status: "published"` — see "Catalog system" and "Store (storefront UI)") → `src/data/products.ts`
+- **Catalog products** — created/edited/published/archived through **Admin → Products → New Product** (`/admin/products`), never by editing source code — see "Product admin + database-backed catalog"
 - **Store index page copy** (heading, intro, empty state) → `src/data/store.ts`
 - **Nav links / header CTA** → `src/data/navigation.ts`
 - **Business info** (name, email, location, social links) → `src/config/site.ts`
@@ -258,20 +287,20 @@ Every service page's CTA (`ServiceCTA`) links to the homepage contact section (`
 
 ## Catalog system (commerce foundation)
 
-**Status: data model + read-only storefront UI. No cart, no checkout, no payments, no admin dashboard exist yet.** This section documents the data model built in the commerce-foundation phase; see "Store (storefront UI)" below for the public `/store` UI built on top of it in the following phase.
+**Status: Neon is the authoritative catalog, with a real admin UI to create/edit/publish/archive products — see "Product admin + database-backed catalog" below for the full architecture.** This section documents the `Product` **type** — schema, media model, status lifecycle, pricing rules — which hasn't changed shape since it was first introduced; only where the data actually *lives* has changed.
 
 ### Purpose and scope
 
-The catalog (`src/data/products.ts`) is a separate system from the portfolio (`projects.ts`) and services (`services.ts`) — it exists to eventually support **purchasable offerings**: both physical products (stickers, labels, printed materials, merchandise) and purchasable creative-service packages (e.g. a priced "Packaging Design — Standard" offering). `products.ts` ships with an intentionally **empty** `products` array — no live products exist yet, and none should be added without real, confirmed content and pricing.
+The catalog (`Product` type, defined in `src/data/products.ts`) is a separate system from the portfolio (`projects.ts`) and services (`services.ts`) — it supports **purchasable offerings**: both physical products (stickers, labels, printed materials, merchandise) and purchasable creative-service packages. `src/data/products.ts` itself holds only types, constants, and pure helpers as of Phase 13 — no product data and no query functions live there anymore. See "Product admin + database-backed catalog" for where real product data actually lives and how it's read.
 
-### id vs. slug — read this before adding a product
+### id vs. slug — permanent identity vs. editable URL
 
 Every `Product` has two identifiers with different jobs:
 
-- **`id`** — the permanent internal identity. Never derive it from the title or slug, never change it once assigned, never reuse a retired one. A future order/admin/database system will reference `product.id`, not `product.slug`.
-- **`slug`** — the editable public URL identity (`/store/[slug]`, once that route exists). A product can be renamed/re-slugged later without breaking anything that already referenced it by `id`.
+- **`id`** — the permanent internal identity. Never derive it from the title or slug, never changes once assigned, never reused once retired. Order/order-line history references `product.id`, not `product.slug` (see "Order snapshots" under "Backend + database foundation").
+- **`slug`** — the editable public URL identity (`/store/[slug]`). A product can be renamed/re-slugged later without breaking anything that already referenced it by `id`.
 
-This split exists specifically so a future rename doesn't silently break historical order references once real orders exist. For the current TypeScript-file phase, `id` can be any human-readable stable string (e.g. `prod_packaging_design_standard`) or a UUID-style string — it just has to be unique and never regenerated from other fields. Both `id` and `slug` are validated for uniqueness independently.
+This split exists specifically so a rename doesn't silently break historical order references. `id` is auto-generated (`prod_` + a random UUID) the moment a product is created through `/admin/products/new` — never chosen or typed by hand, never derived from the title/slug. Both `id` and `slug` are enforced unique — `id` by the database primary key, `slug` by a real unique database constraint (`products_slug_unique`), with a clean, specific "slug already in use" error surfaced back to the admin form rather than a raw database error.
 
 ### Schema
 
@@ -323,9 +352,11 @@ Structural checks (integer, non-negative, valid enum) always apply. "Must eventu
 
 ### Validation
 
-`src/data/products.validate.ts` exports `validateProducts()`, called at module load in `products.ts` exactly like `validateProjects()`/`validateServices()` — a bad entry fails `npm run dev`/`npm run build` immediately, listing every problem at once, not just the first. It checks (non-exhaustive): unique `id`, unique `slug`, valid `productType`/`status`/`category`/`pricing.mode`, non-empty `title`/`summary`, required `seo.title`/`seo.description`, the pricing-consistency rules above, non-negative integer-cent values on every money field (`priceDelta` is the one exception — it may be negative, but must still be a whole integer), image/video `alt` required, video `poster` required, local-only media paths scoped under that product's own `/images/products/[slug]/` folder, no duplicate media `src` within a product, no duplicate `options[].key`/`packages[].slug`/`addOns[].slug` within a product, valid `addOns[].chargeType`, and — if set — `relatedServiceSlug` must match a real `Service.slug`. An empty `products` array is valid; the catalog is allowed to start empty.
+`src/data/products.validate.ts` exports `collectProductValidationErrors()` — the **one** product validator, used everywhere a product needs checking. It checks (non-exhaustive): unique `id`/`slug` (within the array passed in — see below), valid `productType`/`status`/`category`/`pricing.mode`, non-empty `title`/`summary`, required `seo.title`/`seo.description`, the pricing-consistency rules above, non-negative integer-cent values on every money field (`priceDelta` is the one exception — it may be negative, but must still be a whole integer), image/video `alt` required, video `poster` required, local-only media paths scoped under that product's own `/images/products/[slug]/` folder, no duplicate media `src` within a product, no duplicate `options[].key`/`packages[].slug`/`addOns[].slug` within a product, valid `addOns[].chargeType`, and — if set — `relatedServiceSlug` must match a real `Service.slug`.
 
-`PRODUCT_TYPES`/`PRODUCT_STATUSES`/`PRODUCT_CATEGORIES`/`PURCHASE_MODES` are passed into `validateProducts()` as parameters rather than imported by `products.validate.ts`, mirroring `projects.validate.ts`'s pattern — this avoids a circular import, since `products.ts` calls `validateProducts()` with its own data at module load. `services` **is** imported directly into `products.validate.ts` (safe: `services.ts` never imports from `products.ts`, so there's no cycle) to check `relatedServiceSlug` against real service slugs.
+**Where this runs now:** every admin create/edit action (`src/server/mutate-product.ts`) calls `collectProductValidationErrors([candidate], {...})` as the authoritative server-side check before any database write — errors come back as a string array rendered inline in the admin form, the same "collect everything, not just the first" philosophy the build-time validators originally established. This is **not a second, competing validator** — it's the exact same function, just called at a different time (runtime, on an admin-submitted candidate) instead of the original build-time/module-load pattern `validateProjects()`/`validateServices()` still use for their own still-array-backed data. Cross-entry uniqueness (duplicate slug across the *whole* catalog, not just the one candidate) is enforced separately, at the database level, via the real `products_slug_unique` constraint.
+
+`PRODUCT_TYPES`/`PRODUCT_STATUSES`/`PRODUCT_CATEGORIES`/`PURCHASE_MODES` are passed into `collectProductValidationErrors()` as parameters rather than imported by `products.validate.ts`, avoiding a circular import back to `products.ts`. `services` **is** imported directly into `products.validate.ts` (safe: `services.ts` never imports from `products.ts`, so there's no cycle) to check `relatedServiceSlug` against real service slugs.
 
 ### Service ↔ Product relationship
 
@@ -338,35 +369,24 @@ Structural checks (integer, non-negative, valid enum) always apply. "Must eventu
 /store/[slug]      — individual product detail page
 ```
 
-`/store/[slug]/page.tsx` mirrors `work/[slug]/page.tsx` and `services/[slug]/page.tsx` exactly: `generateStaticParams` from `getPublishedProducts()`, `generateMetadata` from `product.seo`, `notFound()` + `dynamicParams = false` so anything outside the static param list 404s instead of rendering on demand. `productHref(slug)` in `products.ts` returns `/store/${slug}`; `STORE_INDEX_HREF` (also in `products.ts`) is the single source of truth for the `/store` index path, used by both the primary nav and the route itself.
+`/store/[slug]/page.tsx` reads from `src/server/queries/catalog.ts` (Neon-backed) rather than an in-memory array — `generateStaticParams` is now `async`, and `dynamicParams` is `true` (not `false`): a product published since the last build still renders correctly on its first request rather than 404ing, because it isn't limited to only the slugs known at build time. See "Product admin + database-backed catalog" for the full ISR/revalidation writeup. `productHref(slug)` in `products.ts` returns `/store/${slug}`; `STORE_INDEX_HREF` (also in `products.ts`) is the single source of truth for the `/store` index path, used by both the primary nav and the route itself.
 
-### How to add a product (once real content exists)
+### How to add a product
 
-1. Copy `physicalProductExample` or `serviceProductExample` from `src/data/product.template.ts` into the `products` array in `products.ts` and fill in real fields only. Leave `status: "draft"` until it's actually ready.
-2. Never invent pricing, deposits, turnaround guarantees, or client facts — leave those fields `undefined` until confirmed, exactly like the portfolio and services rules.
-3. If real media exists, drop it in `public/images/products/[slug]/` and reference it with `productImagePath(slug, filename)`; otherwise leave `media: []` rather than using a stock/placeholder photo (the hand-built branded-placeholder pattern documented under "Portfolio system" is the one sanctioned exception, if it's ever needed here).
-4. Run `npm run build` — the validator will fail loudly and list every problem if something's wrong with the data. Note that once a product is `status: "published"`, the validator additionally requires it to have at least one `media` item and a real price appropriate to its `pricing.mode` (see "Pricing consistency rules" above) — keep it as `"draft"` until those are ready.
-5. Setting `status: "published"` makes the product publicly visible immediately: it appears in the `/store` grid and generates a real `/store/[slug]` page on the next build.
+**Admin → Products → New Product** (`/admin/products/new`) — never by editing source code. See "Product admin + database-backed catalog" for the full admin workflow (sections, validation, publishing rules, media). The old "copy a template object into a TypeScript array" workflow no longer exists — `src/data/product.template.ts` was deleted once the admin creation flow was proven end-to-end with a real product.
 
-### Future database/admin migration notes
+### Database/admin migration — now complete
 
-This model is deliberately shaped so it can move from flat TypeScript arrays into persistent database records managed through a future **Big Red Admin** without a redesign:
-
-- Every entity uses explicit, structured fields (no nested functions/closures, no `Map`/`Set` in the data itself) — a straightforward shape for JSON serialization or a relational table.
-- `id` is the stable primary-key candidate; `slug` is a renameable, independently-unique secondary field — exactly the split a real database and a real admin "change slug without changing ID" feature need.
-- `PRODUCT_CATEGORIES` is centralized in one place specifically so it can become an admin-managed table (or a seeded lookup table) instead of a hardcoded list.
-- `media` being a flat ordered array (not hero/gallery) is specifically meant to survive a future "upload media / drag to reorder" admin UI without a shape change.
-- Planned future admin capabilities this model is already compatible with: Add Product, Edit Product, Duplicate Product, change `slug` without changing `id`, Upload images/video, Reorder media, Set pricing, Set deposits, Manage packages, Manage options, Manage add-ons, Feature/unfeature, Publish, Archive. None of that UI exists yet — only the data shape it will eventually operate on.
-- Future cart/checkout integration points: `Product.pricing.mode` is what a future cart would branch on (inquiry → contact form, fixed-price/full-payment → direct checkout, deposit → partial payment flow, starting-price → likely routes to inquiry/quote first). None of that logic exists yet.
+The notes that used to live here (why the model was "shaped to move to a database later") described a *plan*; that plan is now executed — see "Product admin + database-backed catalog" below for the real, current architecture: Neon as the authoritative catalog, admin-driven CRUD, publish/archive lifecycle, transactional audit logging, and ISR-based storefront revalidation.
 
 ## Store (storefront UI)
 
-**Status: public, read-only browsing UI. Still no cart, checkout, payments, or admin.** Built on top of the catalog system above — this section documents the UI layer specifically.
+**Status: public browsing UI backed by the real Neon catalog, with a working cart/checkout/order path and a full admin behind it.** This section documents the storefront UI layer specifically — see "Product admin + database-backed catalog" for how the data underneath it is now managed and kept fresh.
 
 ### Route behavior
 
-- **`/store`** (`src/app/store/page.tsx`) — a plain static page (not a `[slug]` route), heading + intro from `src/data/store.ts`, then `StoreGrid` rendering **every published product** (not a featured-only subset — this is the full browse page, unlike the homepage's capped teaser sections).
-- **`/store/[slug]`** (`src/app/store/[slug]/page.tsx`) — statically generated only for published products, via the same `generateStaticParams`/`generateMetadata`/`notFound()`/`dynamicParams = false` pattern as `/work/[slug]` and `/services/[slug]`. Draft and archived products are never in the static param list, so their slugs 404 — there is no other gate to remember.
+- **`/store`** (`src/app/store/page.tsx`) — `async`, reads `getPublishedProducts()` from Neon (`src/server/queries/catalog.ts`), heading + intro from `src/data/store.ts`, then `StoreGrid` rendering **every published product** (not a featured-only subset — this is the full browse page, unlike the homepage's capped teaser sections). ISR with `revalidate = 3600` as a time-based fallback; the real freshness mechanism is `revalidatePath("/store")` called directly from every admin product mutation.
+- **`/store/[slug]`** (`src/app/store/[slug]/page.tsx`) — `generateStaticParams` (now `async`) pre-renders currently-published slugs from Neon at build time; `dynamicParams = true` (not `false`) means a product published *since* the last build still renders correctly on its first request rather than 404ing. Draft and archived products are excluded from `generateStaticParams` and from `getProductBySlug()`'s `published`-only query, so their slugs 404 either way — there is no other gate to remember. Same `revalidate = 3600` fallback, same on-demand `revalidatePath()` from admin mutations.
 
 ### ProductCard
 
@@ -638,7 +658,7 @@ Customer email, phone, address, order history, payment information, and private 
 
 Defined in `src/db/schema.ts`, applied via versioned Drizzle migrations (see below):
 
-- **`products`** — mirrors the `Product` type field-for-field (JSONB for `pricing`/`seo`/`media`/`options`/`packages`/`addOns`, deliberately not normalized into separate tables — see "Authoritative product source" below for why this table currently holds **zero rows**).
+- **`products`** — mirrors the `Product` type field-for-field (JSONB for `pricing`/`seo`/`media`/`options`/`packages`/`addOns`, deliberately not normalized into separate tables). **As of Phase 13, this table is the live, authoritative catalog** — see "Product admin + database-backed catalog" for the full read/write architecture built on top of it.
 - **`customers`** — `firstName`, `lastName`, a normalized `email`, optional `phone`/`company`, timestamps. No password/auth fields — no accounts exist.
 - **`orders`** — permanent UUID `id`, human-readable `orderNumber`, `status`, FK to `customerId`, frozen `pricingSummary` JSONB, `notes`, `source` (`"checkout"` today), and `clientRequestId` (the idempotency key).
 - **`order_lines`** — FK to `orderId`, a `productId` reference field (see below), and a full frozen snapshot of everything needed to render the line without ever consulting live product data (see "Order snapshots").
@@ -659,7 +679,7 @@ Every `order_lines` row freezes, at creation time, everything needed to render t
 
 **A historical order must never be recalculated from live `Product` data.** If a product's price, title, or configuration changes — or the product is deleted entirely — every existing order line that referenced it keeps showing exactly what was true when the order was placed. This was directly verified during live testing (see "Live database testing" below): changing a test product's price after an order existed left that order's `unit_price` untouched, while a *new* order for the same product correctly picked up the new price.
 
-**`order_lines.product_id` — nullable reference, no active foreign-key constraint.** This column stores the `Product.id` value at order time, but it is a plain nullable `text` column with **no enforced foreign key to `products.id`**, unlike `order_lines.order_id → orders.id` and `orders.customer_id → customers.id`, which are real, enforced FKs. This is intentional, not an oversight: the live, authoritative product catalog is still `src/data/products.ts` (see "Authoritative product source" below), and the database's `products` table currently holds zero rows. A hard FK from `order_lines.product_id` to `products.id` would reject *every* real order, since no product it referenced would ever have a matching row to point to. A real FK may be added in a later phase once the storefront/catalog actually migrates to database-backed products — at that point `product_id` would gain a `references()` constraint via a new migration (see `drizzle/0001_amazing_hammerhead.sql`, which is what dropped this FK after it briefly existed in the first-generated migration). Until then, order history remains fully, independently renderable from the frozen snapshot fields alone — `product_id` is reference-only, never a rendering dependency.
+**`order_lines.product_id` — nullable reference, foreign-key constraint restored in Phase 13.** This column stores the `Product.id` value at order time. It was deliberately built with **no** enforced foreign key in Phase 11 (`drizzle/0001_amazing_hammerhead.sql` dropped one that briefly existed in the first-generated migration), because the database `products` table was permanently empty while `src/data/products.ts` stayed authoritative — a hard FK would have rejected every real order. That reason no longer applies: now that Neon is the authoritative catalog and `products` holds real rows, `drizzle/0003_fluffy_synch.sql` restored the FK, `order_lines.product_id → products.id`, **`ON DELETE SET NULL`** (not `CASCADE`, not the default `NO ACTION`) — deleting a product can never delete or block deletion of its order history; every field needed to render a historical line is already frozen directly on the row regardless of whether `product_id` still resolves to anything. In practice this is close to moot day-to-day, since Phase 13's admin deliberately has **no hard-delete product action** — archive is the only removal state, and archiving doesn't touch `order_lines` at all.
 
 ### 6. Idempotency
 
@@ -692,10 +712,9 @@ The client never computes or transmits a price at any point in this flow — onl
 
 ### 8. Authoritative product source
 
-**Current:** `src/data/products.ts` (the same TypeScript catalog the public `/store` reads from).
-**Future:** the database `products` table, once a real content/admin workflow exists to populate it.
+**As of Phase 13: the Neon `products` table**, via `src/server/queries/catalog.ts`'s `getProductById()`. This was originally `src/data/products.ts`'s in-memory array; the swap is complete — see "Product admin + database-backed catalog" for the full architecture.
 
-`src/server/product-source.ts` exports one function, `getAuthoritativeProduct(productId)`, and is the **only** place order creation resolves "what is this product, really." It is deliberately `async` even though today's implementation (`getProductById()` from `products.ts`) is synchronous, specifically so the swap to a database query later requires changing this one function's body — not any of its callers, and not the request/response shape of `/api/orders`. Order creation must always go through this boundary, never reach directly into `products.ts` or the database `products` table itself. The database `products` table exists (see "Database tables" above) but is not populated with any real catalog data in this phase — it is schema-only, prepared for that future migration.
+`src/server/product-source.ts` still exports one function, `getAuthoritativeProduct(productId)`, and is still the **only** place order creation resolves "what is this product, really." It was deliberately `async` from the start even when the original implementation (`getProductById()` from the in-memory array) was synchronous, specifically so this swap would only ever require changing this one function's body — not any of its callers, and not the request/response shape of `/api/orders`. That design paid off exactly as intended: the Phase 13 cutover touched this file's internals and nothing else in the order-verification pipeline.
 
 ### 9. Transactions
 
@@ -767,9 +786,9 @@ All of the following were tested against a **real** Neon database (not simulated
 
 The privacy boundary described under "Checkout + Order foundation" above applies without exception to everything this phase added: `customers`, `orders`, and `order_lines` are **private operational data**, exactly like the future intake/payment/internal-notes data that will join them. Nothing in this phase changes that boundary — it just means there is now a real database on the private side of it, not just a documented intention. Public-facing AI must never automatically receive customer, order, payment, or internal-note data; **Big Red Brain** remains a future, explicitly permission-controlled layer, and the **Obsidian Vault** remains a separate, private business-knowledge source. No AI or Obsidian integration exists in this codebase.
 
-### 18. Future product/catalog migration
+### 18. Product/catalog migration — completed in Phase 13
 
-The public storefront (`/store`, `/store/[slug]`) remains entirely TypeScript-backed by `src/data/products.ts` — **this phase does not migrate it to database reads.** The database `products` table exists purely as groundwork (schema-only, zero rows) for a future phase that builds a real content/admin workflow. Order creation already goes through the swappable `getAuthoritativeProduct()` boundary (see "Authoritative product source" above) specifically so that future migration changes one function's implementation, not the storefront, the cart, or the order-creation flow.
+This section originally documented why the public storefront stayed TypeScript-backed while the database `products` table sat empty as groundwork. That migration is now done — see "Product admin + database-backed catalog" below for the complete, current architecture: Neon as the sole authoritative catalog, the public storefront and order verification both reading from it, and a real admin UI as the only supported way to create/edit/publish/archive a product.
 
 ## Admin foundation
 
@@ -902,6 +921,122 @@ All three added to `.env.example` as names only. **A note on generating `AUTH_SE
 ### Future admin expansion
 
 `admin_users`, plus the existing `products`/`customers`/`orders`/`order_lines` tables, are shaped to eventually power — without a redesign — the reserved sidebar sections: **Products, Website, Portfolio, Services, Media, Settings**, each its own future admin surface once a real content workflow exists (see "Future product/catalog migration" under "Backend + database foundation" for the product-specific version of this). **Big Red Brain** and **Obsidian/Knowledge** stay exactly where the Phase 10/11 privacy boundary already put them: private operational data (`admin_users`, `customers`, `orders`, `order_lines`, and anything future intake/payment/notes tables add) must never automatically become public-facing or AI-accessible context. Big Red Brain remains a future, explicitly permission-controlled layer; the Obsidian Vault remains a separate, private business-knowledge source. Nothing in Phase 12 changes that boundary — it just means there's now a real, working front door (Google-authenticated, database-authorized) standing in front of it.
+
+## Product admin + database-backed catalog
+
+**Status: Neon is the sole authoritative product catalog, with a full create/edit/publish/archive admin workflow, live-tested end to end against a real product** (created, edited, the status/productType persistence bug found and fixed, media corrected, and published — see below). Still no hard delete, no media upload/library, no bulk actions. This is the phase that finally executes the "future database/admin migration" plan documented under "Catalog system" and "Backend + database foundation" above.
+
+### Neon is the catalog — `src/data/products.ts` is types/helpers only
+
+`src/data/products.ts` now holds **only** the `Product` type, its constants (`PRODUCT_CATEGORIES`, `PRODUCT_TYPES`, `PRODUCT_STATUSES`, `PURCHASE_MODES`, `ADD_ON_CHARGE_TYPES`), and pure helpers (`productImagePath()`, `productHref()`, `STORE_INDEX_HREF`, `isPublishedProduct()`, `slugify()`) — no product data, no query functions. `src/server/queries/catalog.ts` (`server-only`) is the one place anything reads a `Product` from Neon: `getPublishedProducts()`, `getProductBySlug()`, `getProductById()` (full catalog regardless of status — used by both admin and order verification), `getFeaturedProducts()`, `getProductsByServiceSlug()` (all mirroring the old array-backed functions' names/behavior so callers needed only an import-path change), plus the admin-only, paginated/filtered `listProducts()`. A small `mapProductRow()` narrows Drizzle's widened `string` columns (`productType`/`status`/`category` are plain `text`, not `.$type<T>()`-annotated) back to their real union types, and normalizes Postgres `null` → `Product`'s "absent means `undefined`" convention for optional fields.
+
+**`src/data/product.template.ts` has been deleted.** It existed to support the old "copy this object into the array" workflow — with a real, proven admin UI, it no longer applies, and the file was removed only after a real product had been created, edited, and published through `/admin/products` successfully.
+
+### Admin routes
+
+```
+/admin/products              — list: search, status filter, category filter, pagination
+/admin/products/new           — create form
+/admin/products/[id]           — read-only detail view
+/admin/products/[id]/edit        — edit form (same ProductForm component as create)
+/admin/products/[id]/preview       — admin-authenticated draft preview
+```
+
+All inside the existing `(protected)` route group — `requireAdminUser()` coverage via the layout is automatic for every page above. `src/config/admin-nav.ts`'s "Products" entry is now `available: true`.
+
+### Permanent ID vs. editable slug — enforced, not just documented
+
+A product's `id` (`prod_` + `crypto.randomUUID()`) is generated once at creation and never touched again by any edit — `updateProductAction(id, ...)` always operates on the id passed via the route (`/admin/products/[id]/edit`), never a value read from the form. The edit form's slug field is fully editable and, on save, only ever changes the `slug` column — this was directly exercised in the live regression harness (a slug rename left `id` provably unchanged) and in the real acceptance test (the product's slug changed from an initial placeholder to `custom-graphic-design` across edits while `id` stayed `prod_1f897ba0-...` throughout).
+
+### Orders/products query and mutation split
+
+Mirrors the read/write separation already established for orders/customers, now extended to products:
+
+- **Reads:** `src/server/queries/catalog.ts` — `server-only`, zero `insert`/`update`/`delete` calls, never imported by a client component.
+- **Writes:** `src/server/mutate-product.ts` — `"use server"`, the only place a `products` row is created or updated. `createProductAction()` and `updateProductAction()` **each independently call `requireAdminUser()`** as their first line — not relying on the protected layout, per the rule already written down in "Admin foundation": Server Actions aren't covered by a page-level check.
+- **Form parsing:** `src/server/build-product-form.ts` — the one untrusted-input boundary, turning raw admin `FormData` into a candidate `Product` (shape/type parsing only — dollars→cents via `src/server/dollars-to-cents.ts`, JSON-array fields parsed with try/catch). It does **not** decide whether the candidate is valid.
+- **Validation:** the exact same `collectProductValidationErrors()` documented under "Catalog system" — reused verbatim, never duplicated. `mutate-product.ts` calls it after parsing and before any database write; on failure, the raw error strings are returned to the form, nothing is written, nothing is logged.
+- **Slug-collision handling:** the database's own `products_slug_unique` constraint is the real authority; a `23505` violation on that specific constraint (detected via the shared `src/server/is-unique-violation.ts`, also now used by `create-order.ts`) is caught and turned into a clean `"Slug "..." is already in use by another product."` message rather than a raw database error.
+
+### Publishing lifecycle — archive-only, no hard delete
+
+`status: "draft" | "published" | "archived"` is a normal field on the same create/edit form (a "Publishing" section with a status `<select>`) — there is no separate one-click "Publish" button; setting Published and saving *is* publishing. **There is no delete action anywhere in the admin UI** — archive is the only "remove from circulation" state, matching `ProductStatus` having had `"archived"` as a distinct value since Phase 7 specifically for this. `mutate-product.ts` compares the old and new status on every edit to choose the right audit `action` (`product.published` when moving *to* published from something else, `product.archived` moving *to* archived, `product.updated` otherwise) — this was confirmed correct via the real product's actual audit trail, not just the regression harness.
+
+### Draft/archived stay private — no new logic needed
+
+`getPublishedProducts()`/`getProductBySlug()` both filter to `status = 'published'` in SQL — the exact same single-choke-point principle the old array-backed `getPublishedProducts()` already established, just implemented as a `WHERE` clause instead of an array `.filter()`. `POST /api/orders`'s existing `product.status !== "published"` check (unchanged since Phase 11) now means something real: a request crafted against a draft or archived product id is rejected with a `409`, using the product's live title fetched from Neon — verified live, not just asserted, using temporary draft/archived test products during the pre-acceptance test.
+
+### Storefront ISR + on-demand revalidation
+
+See "Store (storefront UI)" above for the route-level detail. The short version: `generateStaticParams` pre-renders whatever's published at build time, `dynamicParams = true` means anything published later still renders on its first request, a `revalidate = 3600` fallback guards against a missed revalidation call, and — the actual mechanism that makes "publish in admin, no redeploy needed" true in practice — every product mutation calls `revalidatePath("/store")` and `revalidatePath(`/store/${slug}`)` (both the *old and new* slug, if a rename happened) immediately after its database write succeeds. This was proven live: the real product's `/store/custom-graphic-design` page went from `404` to a real, statically-generated `200` page purely by publishing through the admin form — no code change, no `next build`, no redeploy.
+
+### Admin-authenticated draft preview
+
+`/admin/products/[id]/preview` reuses the **exact same** public rendering components `/store/[slug]` uses (`ProductHero`, `ProductMedia`, `ProductDetails`, `ProductPricing`, `ProductOptions`, `ProductPackages`, `ProductAddOns`, `ProductCTA`) — sourced via the admin `getProductById()` (any status) instead of the public published-only path, so a preview is never a reconstruction, it's literally what the public page will render once published. No public secret-token preview mechanism exists or is planned — protected-admin-only is the permanent approach here, not a placeholder for something else later.
+
+### Transactional audit logging
+
+A small, general-purpose `audit_log` table (not product-specific — ready for any future admin write), added via `drizzle/0004_jittery_boomerang.sql`:
+
+```
+id, admin_user_id (→ admin_users.id, ON DELETE SET NULL), action, entity_type, entity_id, metadata (jsonb), created_at
+```
+
+Append-only — nothing ever updates or deletes a row, so there's deliberately no `updated_at`. `src/server/audit-log.ts`'s `recordAuditEvent(executor, event)` accepts either a live `db.transaction()`'s `tx` or the plain client, and `mutate-product.ts` always passes `tx` — the product write and its audit entry commit or roll back **together**, inside the same transaction, never as two separate steps that could drift apart. `metadata` stays small and non-sensitive (e.g. `{ slug, title, from, to }`) — never a full entity payload, never secrets, never customer/order PII. Confirmed against the real product: six real events (`product.created`, four `product.updated`, `product.published`), every one referencing the same permanent product id and the real owner's `admin_users.id`.
+
+### `order_lines.product_id` FK restored
+
+`drizzle/0003_fluffy_synch.sql` — see "Order snapshots" under "Backend + database foundation" for the full writeup. Short version: dropped in Phase 11 because `products` was permanently empty; restored now (`ON DELETE SET NULL`) because it's genuinely safe and meaningful now that `products` holds real rows.
+
+### `POST /api/orders` — now genuinely verifying against Neon
+
+No code changed in `/api/orders/route.ts` itself for this phase — only `src/server/product-source.ts`'s internals swapped, exactly as its own Phase 11 design comment predicted. The full published/eligible/configuration/pricing verification chain now runs against live database state instead of a static array that could never actually go stale. Live-verified: a real request against the real product (which is `purchaseMode: "inquiry"`, never cart-eligible) correctly returned `409 "not eligible for direct order"` with the product's real, live-fetched title — proving the Neon lookup succeeded without ever needing to create a test order.
+
+### Media — path/reference editing only, no upload
+
+Deliberately unchanged from the approved scope: the media section of the admin form (`ProductMediaEditor.tsx`) is a repeatable list of `{ type, src, alt, poster?, caption? }` rows — plain text inputs for a path, not a file picker or upload button. The admin places the real file under the product's own folder first (see canonical structure below), then types the path in. Validation reuses the exact media rules already in `products.validate.ts` (local-path-only, scoped to the product's own folder, video requires a poster) — no new rules were added. **A real Media Library/upload system is still a planned, separate future phase** — this is not a placeholder gap being papered over, it's the explicitly agreed boundary for Phase 13.
+
+**Canonical local product media structure:**
+
+```
+public/images/products/[product-slug]/...
+```
+
+e.g. `public/images/products/custom-graphic-design/hero.png`. This was briefly violated during real usage (the real file ended up at `public/images/products/hero.png`, no slug subfolder, breaking the database's existing reference) and then corrected: confirmed byte-identical via SHA-256 before removing the duplicate, keeping only the canonical slug-scoped path. Worth remembering for any future manual file placement — the folder-per-slug convention is not automatically enforced by anything except the validator's path-prefix check at save time, which only fires on the *database* path, not on where a file actually ends up on disk.
+
+### Store/product media presentation — contain, not cover
+
+Product and service artwork spans wildly different aspect ratios (square logos, portrait flyers, wide packaging wraps, menus, product photography) and must never be cropped to force-fit one shape. Two CSS changes, both deliberately scoped to product-only classes so the portfolio/services presentation (which shares some of the same underlying class names) is completely unaffected:
+
+- **`.product-card-media img`** (store grid cards, `src/components/ui/ProductCard.tsx`) — `object-fit: cover` → `contain`. This class was already product-only (never shared with `ProjectCard`), so this was a pure one-line change.
+- **Product hero** (`src/components/ProductHero.tsx`) — moved off the shared `.project-hero-media` class (also used by `ProjectHero` and `ServiceHero`) onto a new, fully self-contained `.product-hero-media` class: no fixed `aspect-ratio` on the box, instead `height: clamp(320px, 45vw, 640px)` (fluidly responsive, no separate mobile media query needed), `object-fit: contain`, same border/shadow treatment preserved, `background: var(--black)` for the letterboxed space (matching the same on-brand letterboxing already used by the gallery).
+- **Gallery** (`ProductMedia.tsx` / `.project-gallery-item`) — required **no change**. It already used `object-fit: contain` with a black letterboxed background; this was verified by inspection, not assumed.
+
+Verified against the real product's actual artwork (1600×1200, 4:3) end to end: card, hero, and public page all render the complete image, uncropped. The aspect-ratio guarantee itself is structural (`object-fit: contain` always shows the complete image, letterboxed on whichever axis is limiting), not something that needed separate testing per shape.
+
+### Options, packages, add-ons — same models, admin-editable now
+
+`ProductOptionsEditor`, `ProductPackagesEditor`, `ProductAddOnsEditor` are client components rendering the exact same `ProductOption`/`ProductPackage`/`ProductAddOn` types documented under "Catalog system" — no new types, no sticker-specific assumptions, no new validation rules. Each manages local array state (add/remove/edit rows) and serializes into one hidden JSON form field (`optionsJson`/`packagesJson`/`addOnsJson`) that the surrounding native `<form>` submits normally — the same "one native form, one server action" pattern the rest of the admin already uses, with array editing as the one genuinely-interactive piece, mirroring how `ProductPurchasePanel` already blends server-rendered structure with client-side interactivity elsewhere in this codebase. Add-on `chargeType` is presented as an explicit radio choice with the exact semantic explanation in the UI ("Per unit — charged once for every quantity ordered" / "Per line — charged once for the configured cart line, regardless of quantity") — never silently defaulted, since it changes cart/order math (see `cart-pricing.ts`).
+
+### Money — dollars in the admin UI, integer cents everywhere else
+
+`src/server/dollars-to-cents.ts` is the **one** place an admin-entered dollar string (`"25.00"`) becomes authoritative integer cents (`2500`) — never client-side, never anywhere else. It returns `null` for blank/non-numeric/negative/unsafe input, and callers (`build-product-form.ts`) treat `null` as "no number entered," which `collectProductValidationErrors()` then either allows (draft, or a pricing mode that doesn't need it) or rejects (a published product in a mode that requires it) — exactly the existing pricing-consistency rules, unchanged. The admin form itself always displays and accepts dollars (`$25.00`), matching the existing site-wide rule that a float dollar amount is never the authoritative representation.
+
+### A controlled-select bug, and why every admin `<select>` is controlled now
+
+**What happened:** early real-world use of the create/edit form showed `status` and `productType` edits silently failing to persist — the value would appear to be selected in the browser, the save would succeed, but the database still showed the old value. Title, slug, and media edits persisted correctly in the same sessions.
+
+**Root cause:** every `<select>` in `ProductForm.tsx` except Purchase mode was **uncontrolled** (`defaultValue` only, no `value`/`onChange`). React's `<select>` reconciliation can re-apply `defaultValue` on a re-render triggered by unrelated state elsewhere in the same component (e.g. typing in the controlled Title field triggers a re-render of the whole form) — silently reverting a user's just-made selection before the form was ever submitted. `<input>`/`<textarea>` `defaultValue` doesn't have this failure mode (confirmed); it's specific to `<select>`. Purchase mode was never affected because it was already built as a controlled component — that's exactly why the fix generalizes its pattern rather than inventing a new one.
+
+**Proof, not just theory:** a temporary regression harness (Neon test product, real `buildProductFromFormData()`/`collectProductValidationErrors()`/Drizzle transaction, synthetic `FormData` built to look like a correctly-working browser submission) exercised draft↔published, physical→service, published→archived, a slug rename, invalid-value rejection, and audit-event correctness — **22/22 passed**, conclusively proving the server-side pipeline was never the problem and the break had to be client-side.
+
+**The fix:** `category`, `productType`, `relatedServiceSlug`, and `status` in `ProductForm.tsx` are now all controlled (`useState` + `value` + `onChange`), matching `purchaseMode`'s existing pattern. **Rule for any future admin form work: every `<select>` must be a controlled component — never `defaultValue`-only.** `<input>`/`<textarea>` `defaultValue` remains fine as-is.
+
+### Live acceptance test — what was genuinely verified
+
+Using one real, admin-created product (not seeded, not synthetic) start to finish: created via `/admin/products/new` → appeared in `/admin/products` → did **not** appear publicly while draft → previewed correctly while authenticated → edited (title, slug, productType, media) → the status/productType bug found and fixed as above → media path mismatch found and corrected (byte-identical duplicate removed) → published → appeared on `/store` and `/store/custom-graphic-design` (`200`, statically generated) with no redeploy → card and hero both render the complete, uncropped artwork → `POST /api/orders` resolves the same product from Neon → exactly one product row throughout → six real, correctly-attributed audit events (`created`, four `updated`, `published`) → zero customer/order/order_line rows created merely by any of this → the real owner's `admin_users` row untouched throughout.
+
+**Not built/planned for later:** bulk product actions, product duplication, a "quick publish" one-click control separate from the edit form, and — as already covered above — the Media Library/upload system.
 
 ## Rules for creating new components
 

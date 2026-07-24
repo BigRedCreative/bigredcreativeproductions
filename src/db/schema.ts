@@ -71,6 +71,37 @@ export const adminUsers = pgTable(
 );
 
 // ---------------------------------------------------------------------
+// Audit log — small and general on purpose, not product-specific. The
+// one place any admin write action's "who did what, to what, when" gets
+// recorded. Append-only: nothing in this codebase ever updates or deletes
+// an audit_log row once written, so there is no updatedAt column, matching
+// the same immutable-record philosophy already used for order_lines.
+//
+// `metadata` must stay small, structured, and non-sensitive — e.g.
+// { slug, title } or { from: "draft", to: "published" }. Never a full
+// entity payload, never secrets, never customer/order PII.
+//
+// Written inside the SAME db.transaction() as the mutation it records
+// (see src/server/audit-log.ts), so a logged event and the change it
+// describes can never drift apart — either both happen or neither does.
+// ---------------------------------------------------------------------
+export const auditLog = pgTable("audit_log", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  adminUserId: uuid("admin_user_id").references(() => adminUsers.id, { onDelete: "set null" }),
+  // e.g. "product.created" | "product.updated" | "product.published" | "product.archived"
+  action: text("action").notNull(),
+  // e.g. "product" — the kind of thing this event is about, not scoped to
+  // products specifically; future admin writes (orders, customers, ...)
+  // reuse this same table.
+  entityType: text("entity_type").notNull(),
+  // The entity's permanent id — text, not uuid, since e.g. Product.id is a
+  // plain stable string, not necessarily a UUID.
+  entityId: text("entity_id").notNull(),
+  metadata: jsonb("metadata").$type<Record<string, unknown>>(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// ---------------------------------------------------------------------
 // Products — schema only. No real rows are inserted this phase (the
 // public catalog stays on src/data/products.ts until a content/admin
 // workflow exists — see CLAUDE.md). This table exists so order_lines has
@@ -168,23 +199,24 @@ export const orders = pgTable(
 // opaque historical blob, not a live relational entity, so there is no
 // separate OrderLineOption/OrderLineAddOn/OrderLinePackage table.
 //
-// productId is nullable and deliberately has NO foreign key constraint to
-// `products`, even though it stores a Product.id value. The `products`
-// table above is schema-only — no rows are inserted into it in this phase,
-// since the authoritative catalog is still src/data/products.ts (see
-// CLAUDE.md "Catalog system"). A real FK here would reject every order for
-// any real product, since it would never have a matching `products` row to
-// reference. Every field needed to render this row is already frozen
-// directly on it, so this column is reference-only (useful once the
-// catalog actually migrates into `products`), never a rendering
-// requirement or an enforced relationship today.
+// productId is nullable, with an ON DELETE SET NULL foreign key to
+// `products` restored in Phase 13 now that Neon is the authoritative
+// catalog (see CLAUDE.md "Product admin + database-backed catalog"). It
+// was deliberately dropped in Phase 11 because `products` was permanently
+// empty while src/data/products.ts stayed authoritative — a real FK would
+// have rejected every order. That reason no longer applies. SET NULL (not
+// CASCADE, not RESTRICT) is deliberate: archiving or — in the unlikely
+// event one ever happens — deleting a product must never delete or block
+// deletion of historical order history. Every field needed to render this
+// row is already frozen directly on it, so this column remains
+// reference-only, never a rendering requirement.
 // ---------------------------------------------------------------------
 export const orderLines = pgTable("order_lines", {
   id: uuid("id").primaryKey().defaultRandom(),
   orderId: uuid("order_id")
     .notNull()
     .references(() => orders.id, { onDelete: "cascade" }),
-  productId: text("product_id"),
+  productId: text("product_id").references(() => products.id, { onDelete: "set null" }),
   productSlug: text("product_slug").notNull(),
   productTitle: text("product_title").notNull(),
   productType: text("product_type").notNull(),
@@ -216,4 +248,8 @@ export const ordersRelations = relations(orders, ({ one, many }) => ({
 export const orderLinesRelations = relations(orderLines, ({ one }) => ({
   order: one(orders, { fields: [orderLines.orderId], references: [orders.id] }),
   product: one(products, { fields: [orderLines.productId], references: [products.id] }),
+}));
+
+export const auditLogRelations = relations(auditLog, ({ one }) => ({
+  adminUser: one(adminUsers, { fields: [auditLog.adminUserId], references: [adminUsers.id] }),
 }));

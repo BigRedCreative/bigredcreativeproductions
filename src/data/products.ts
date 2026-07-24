@@ -1,11 +1,14 @@
-import { validateProducts } from "./products.validate";
 import type { Media } from "./media";
 
-// The product/catalog data model — see CLAUDE.md "Catalog system" and
-// "Store" for the full architecture writeup. The /store storefront reads
-// from this file; cart, checkout, payments, and an admin dashboard still
-// don't exist — this file (plus the read-only storefront UI) is the whole
-// system so far.
+// The product/catalog TYPE model — shared by every layer that needs to
+// know what a Product IS: the database schema (src/db/schema.ts), the
+// admin product forms, the cart, and order verification. As of Phase 13,
+// Neon is the sole authoritative catalog — this file intentionally no
+// longer holds any product DATA or query logic. See
+// src/server/queries/catalog.ts for the real, database-backed
+// getPublishedProducts()/getProductBySlug()/getProductById()/etc., and
+// CLAUDE.md "Product admin + database-backed catalog" for the full
+// writeup of why the split landed here.
 
 export const PRODUCT_CATEGORIES = [
   "Design Services",
@@ -121,21 +124,6 @@ export type Product = {
   };
 };
 
-// Intentionally empty — no real, confirmed product/pricing data exists yet.
-// See src/data/product.template.ts for a reference-only example of the
-// shape; it is never imported here or anywhere else in the app.
-export const products: Product[] = [];
-
-// Fails loudly (build or dev server) with every problem listed at once if
-// product data is invalid — see src/data/products.validate.ts.
-validateProducts(products, {
-  validTypes: PRODUCT_TYPES,
-  validStatuses: PRODUCT_STATUSES,
-  validCategories: PRODUCT_CATEGORIES,
-  validPurchaseModes: PURCHASE_MODES,
-  validAddOnChargeTypes: ADD_ON_CHARGE_TYPES,
-});
-
 // Builds the conventional path for a product media asset — see
 // public/images/products/[slug]/ in CLAUDE.md. Does not touch the file
 // system; it only builds the string a real, already-placed file should
@@ -154,29 +142,15 @@ export function isPublishedProduct(product: Product): boolean {
   return product.status === "published";
 }
 
-// The only product list that's safe to expose publicly. Draft and archived
-// products are excluded from every public-facing lookup below.
-export function getPublishedProducts(): Product[] {
-  return products.filter(isPublishedProduct);
-}
-
-export function getProductBySlug(slug: string): Product | undefined {
-  return getPublishedProducts().find((product) => product.slug === slug);
-}
-
-// Searches the full catalog, not just published products — a draft or
-// archived product must still be resolvable by its permanent id (e.g. for a
-// future order that references an item no longer publicly listed).
-export function getProductById(id: string): Product | undefined {
-  return products.find((product) => product.id === id);
-}
-
-export function getFeaturedProducts(): Product[] {
-  return getPublishedProducts().filter((product) => product.featured);
-}
-
-// Products that reference a given Service by slug — the one-directional
-// link described in CLAUDE.md. Returns only published products.
-export function getProductsByServiceSlug(serviceSlug: string): Product[] {
-  return getPublishedProducts().filter((product) => product.relatedServiceSlug === serviceSlug);
+// Pure, dependency-free — used both client-side (the admin title→slug
+// auto-fill, before the user has touched the slug field by hand) and
+// server-side (final normalization in src/server/build-product-form.ts).
+// The server-side normalization is what's ever actually authoritative;
+// the client-side use is UX convenience only.
+export function slugify(input: string): string {
+  return input
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
 }

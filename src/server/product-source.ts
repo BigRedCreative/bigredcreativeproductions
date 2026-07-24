@@ -1,15 +1,17 @@
 import "server-only";
-import { getProductById } from "@/data/products";
+import { getProductById } from "@/server/queries/catalog";
 import type { Product } from "@/data/products";
 
 // The ONE place order creation resolves "the authoritative product" — see
-// CLAUDE.md "Backend + database foundation". Backed by products.ts today,
-// since the public storefront still reads from there (the products table
-// exists but isn't the live catalog yet). Swap this implementation to
-// query the database once the catalog migrates; nothing that calls
-// getAuthoritativeProduct() needs to change. Deliberately async even
-// though today's implementation is synchronous, so that swap is a
-// non-breaking change for every caller.
+// CLAUDE.md "Product admin + database-backed catalog". As of Phase 13,
+// Neon is the real, sole authoritative catalog — getProductById() here
+// queries the live `products` table (see src/server/queries/catalog.ts),
+// searching the full catalog regardless of status so a since-archived
+// product a client references can still be resolved and correctly
+// rejected (rather than looking like "not found"). This was already
+// async in the pre-database implementation specifically so this swap
+// would be a non-breaking change for every caller — POST /api/orders did
+// not need to change at all.
 export async function getAuthoritativeProduct(productId: string): Promise<Product | undefined> {
   return getProductById(productId);
 }
