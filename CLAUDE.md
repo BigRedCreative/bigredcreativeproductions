@@ -109,6 +109,16 @@ src/
         sized down to one selection. BrandForm computes live, non-blocking WCAG contrast
         warnings client-side (src/data/contrast.ts, no new dependency). PublishBrandButton
         mirrors PublishHeroButton's fieldless draft-to-published copy pattern exactly.
+    StringListEditor.tsx, ProcessStepsEditor.tsx, ServiceHeroField.tsx, ServiceGalleryEditor.tsx,
+    ServiceForm.tsx, PublishServiceButton.tsx, ServiceArchiveToggle.tsx, ServiceMoveButtons.tsx
+      — the Phase 17 Services Admin UI, see "Services + Portfolio Admin". StringListEditor is a
+        generic repeatable-string editor (capabilities/deliverables); ProcessStepsEditor the
+        title+description-pair equivalent; both plain add/remove/move-up-down, no drag-and-drop.
+        ServiceHeroField/ServiceGalleryEditor mirror ProductMediaEditor's dual manual-path/Media-
+        Library-picker pattern, sized for ServiceImage's simpler {src, alt, mediaAssetId?} shape
+        (no type/poster/caption). PublishServiceButton/ServiceArchiveToggle mirror
+        PublishBrandButton/MediaStatusToggle's exact fieldless-button patterns; ServiceMoveButtons
+        is the up/down sortOrder-swap control.
 
   data/
     homepage.ts    — homepage copy (hero, ticker, manifesto, statement, studio, process, contact
@@ -160,9 +170,11 @@ src/
   db/
     schema.ts   — Drizzle table/sequence definitions (admin_users, audit_log, products, customers,
                    orders, order_lines, order_number_seq, site_settings, navigation_items,
-                   homepage_content, contact_content, media_assets, brand_settings) — see
+                   homepage_content, contact_content, media_assets, brand_settings, services,
+                   service_versions, portfolio_projects, portfolio_project_versions) — see
                    "Backend + database foundation", "Product admin + database-backed catalog",
-                   "Website content admin", "Media Library", and "Brand Controls"
+                   "Website content admin", "Media Library", "Brand Controls", and
+                   "Services + Portfolio Admin"
     index.ts      — getDb(): lazy, server-only Neon/Drizzle client, throws only when actually called
 
   server/
@@ -210,12 +222,34 @@ src/
     queries/media.ts        — server-only, database-backed media reads: listMediaAssets() (admin,
                           paginated/filtered/searched), getMediaAssetById(), getMediaAssetsByIds()
                           (batch, used by catalog.ts's resolution step), getActiveImageAssetsForPicker(),
-                          findProductsReferencingMediaAsset() (the query-time usage scan) — the ONE
-                          place anything in the app reads a media_assets row — see "Media Library"
+                          findProductsReferencingMediaAsset()/findServicesReferencingMediaAsset()/
+                          findProjectsReferencingMediaAsset() (the query-time usage scans, the
+                          latter two Phase 17 additions checking both draft and published version
+                          rows) — the ONE place anything in the app reads a media_assets row — see
+                          "Media Library" and "Services + Portfolio Admin"
     validate-brand-color.ts    — validateAndNormalizeColor(): accepts only #RGB/#RRGGBB, normalizes to
                           uppercase #RRGGBB, rejects everything else — see "Brand Controls"
     mutate-brand.ts        — saveBrandDraftAction()/publishBrandAction(): the only place a
                           brand_settings row is written — see "Brand Controls"
+    queries/services.ts       — server-only, database-backed Service reads. Public:
+                          getPublishedServices(), getServiceBySlug(), getFeaturedServices() (entity
+                          status='published' JOINed to version_type='published' only). Admin:
+                          listServicesForAdmin() (flat, every status, both version summaries),
+                          getServiceEntityForAdmin() (full draft + published Service objects, no
+                          fallback merge) — the ONE place anything in the app reads a Service from
+                          Neon — see "Services + Portfolio Admin"
+    queries/portfolio.ts       — server-only, database-backed Project reads: getPublishedProjects(),
+                          getProjectBySlug(), getFeaturedProjects(), getAdjacentProjects() (prev/next,
+                          same wrap-around semantics as the old array-backed version) — the ONE
+                          place anything in the app reads a Project from Neon (public side only —
+                          no admin reads yet, Portfolio Admin isn't built) — see
+                          "Services + Portfolio Admin"
+    build-service-form.ts     — parses admin Service-form FormData into a candidate version-row
+                          content shape; shape parsing only, mirrors build-product-form.ts's split
+                          from business validation — see "Services + Portfolio Admin"
+    mutate-service.ts       — createServiceAction()/saveServiceDraftAction()/publishServiceAction()/
+                          setServiceArchivedAction()/moveServiceAction(): the only place a
+                          services/service_versions row is written — see "Services + Portfolio Admin"
     queries/brand.ts        — server-only, database-backed brand reads: getPublishedBrandTokens(),
                           getDraftBrandTokens() (both field-level-fallback-safe against
                           globals.css's own :root defaults, and both resolve logo Media Library
@@ -243,8 +277,8 @@ CLI-only files — see "Backend + database foundation" → "Database migrations"
 - **Contact section copy** (kicker, heading, description, submit button label) — edited through **Admin → Website → Contact** (`/admin/website/contact`) — see "Website content admin". The form's own field labels/placeholders/service options are still code-owned in `src/data/homepage.ts`.
 - **SEO/meta title, meta description, canonical URL, social share description** — edited through **Admin → Website → SEO & Sharing** (`/admin/website/seo`) — see "Website content admin".
 - **Other homepage text** (ticker, manifesto, statement, studio, process copy) → still `src/data/homepage.ts` directly — not migrated to the database this phase.
-- **Services list** → `src/data/services.ts`
-- **Portfolio projects** → `src/data/projects.ts`
+- **Services** — created/edited/published/archived through **Admin → Services** (`/admin/services`, draft/preview/publish workflow), never by editing source code — see "Services + Portfolio Admin". `src/data/services.ts`'s `services` array is now frozen seed/reference data only, no longer read by any public or admin runtime path.
+- **Portfolio projects** — **Neon is now the public runtime authority** (see "Services + Portfolio Admin"), but the admin UI for editing them isn't built yet — until it ships, portfolio content changes still require a direct, careful database update (or, once available, the Portfolio Admin). `src/data/projects.ts`'s `projects` array is frozen seed/reference data, no longer read by any public runtime path.
 - **Catalog products** — created/edited/published/archived through **Admin → Products → New Product** (`/admin/products`), never by editing source code — see "Product admin + database-backed catalog"
 - **Product images/artwork** — uploaded and selected through **Admin → Media** (`/admin/media`) and the product edit form's "Choose from Media Library" picker — see "Media Library". Manually-typed local paths under `public/images/products/[slug]/` still work exactly as before; the two approaches coexist.
 - **Brand colors, buttons, and logos** — edited through **Admin → Website → Branding** (`/admin/website/branding`, draft/preview/publish), never by editing `globals.css` directly — see "Brand Controls". `globals.css`'s `:root` values are now the fallback only.
@@ -976,11 +1010,16 @@ Next.js 16 **renamed** the `middleware.ts` file convention to `proxy.ts` (export
 /admin/website/branding/preview    — admin-authenticated draft preview (protected)
 /admin/media               — media library grid: upload, search, filter, pagination (protected) — see "Media Library"
 /admin/media/[id]             — media detail: preview, alt/caption edit, archive/unarchive, replace (protected)
+/admin/services              — list: every entity, any status (protected) — see "Services + Portfolio Admin"
+/admin/services/new           — create a service (draft only) (protected)
+/admin/services/[id]           — detail: currently-live vs. private-draft, publish, archive/unarchive (protected)
+/admin/services/[id]/edit        — edit the DRAFT version (protected)
+/admin/services/[id]/preview       — admin-authenticated draft preview (protected)
 ```
 
 Route-group structure: `src/app/admin/layout.tsx` (top-level — imports the admin stylesheet, sets `robots: { index: false, follow: false }`, does **no** auth check) wraps everything, including `login/` and `access-denied/`, which sit as siblings outside the `(protected)` route group. `src/app/admin/(protected)/layout.tsx` is what actually calls `requireAdminUser()` and renders the sidebar/header shell — only routes inside that group are protected. Route groups (`(protected)`) don't appear in the URL, so `/admin/(protected)/orders/page.tsx` serves `/admin/orders` exactly as shown above.
 
-**Reserved, not built:** `/admin/services`, `/admin/portfolio`, `/admin/settings`, `/admin/brain` — listed in `src/config/admin-nav.ts`'s `adminNavItems` with `available: false`, rendered in the sidebar as plain disabled text with a "Coming later" badge, **never a real `<a>`/`<Link>`, never a working href.** Add a route here only when it actually exists. `/admin/products` (Phase 13), `/admin/website` (Phase 14), and `/admin/media` (Phase 15) are all `available: true` now.
+**Reserved, not built:** `/admin/portfolio`, `/admin/settings`, `/admin/brain` — listed in `src/config/admin-nav.ts`'s `adminNavItems` with `available: false`, rendered in the sidebar as plain disabled text with a "Coming later" badge, **never a real `<a>`/`<Link>`, never a working href.** Add a route here only when it actually exists. `/admin/products` (Phase 13), `/admin/website` (Phase 14), `/admin/media` (Phase 15), and `/admin/services` (Phase 17) are all `available: true` now. `/admin/portfolio` remains reserved — see "Services + Portfolio Admin" → "Portfolio Admin — explicitly not built yet."
 
 **No public navigation ever links to `/admin`** — reachable only by its direct URL, and excluded from search indexing via the layout's `robots` metadata.
 
@@ -1477,6 +1516,126 @@ Typography/font control (exactly one `font-family` declaration exists in the who
 ### Future visual controls (documentation only)
 
 `brand_settings` is shaped so a future phase can extend this same admin without a redesign: typography (a font picker plus real `@font-face`/web-font loading infrastructure would need to be built first — deliberately not started this phase, per the brief's own instinct); `.round-button`/`.header-cta` styling, if ever opened to admin control, would need their own explicit approval since they're intentional design-system outliers, not part of this shared token system; a version-history/rollback view over `brand_settings` (today only "current draft" and "current published" exist, no history log beyond `audit_log`'s own small metadata); and the same clearer session-expiration messaging noted above, generalized across every admin Server Action rather than solved brand-controls-specific. None of this is scheduled — recorded so a future phase doesn't have to re-derive the shape from scratch.
+
+## Services + Portfolio Admin
+
+**Status: Neon is the public runtime authority for both Services and Portfolio. A complete Services Admin exists — create, staged draft/publish editing, preview, archive/unarchive, reorder, Media Library integration — live-tested against a real Service (Branding). Portfolio Admin does not exist yet; the portfolio_projects/portfolio_project_versions tables are seeded and Neon-backed on the public side, but there is no admin UI to edit them — that is the next remaining piece of this phase, not a future phase.**
+
+### Why this diverges from Product's model — a genuine staged draft/publish system
+
+Product (Phase 13) uses a single row with a `status` field — editing an already-published product changes the live page immediately on save. Services/Portfolio deliberately use a different, richer model: **a permanent-identity entity table plus a versions table holding at most two rows per entity** (`draft`, `published`), so editing an already-published service is completely safe — the public site can never see a draft edit until it's explicitly published.
+
+```
+services                          service_versions
+├── id (permanent, "service_" +   ├── id (internal row id, uuid)
+│     crypto.randomUUID())        ├── serviceId → services.id
+├── status: draft|published|      ├── versionType: 'draft' | 'published'
+│     archived (ENTITY lifecycle) ├── slug, title, summary, capabilities,
+├── sortOrder (immediate, not     │     deliverables, process, ctaLabel,
+│     staged)                     │     heroMediaAssetId/heroImageSrc/Alt,
+└── createdAt / updatedAt         │     gallery, seo, 8 dormant commerce fields
+                                   └── updatedAt
+```
+
+`portfolio_projects` / `portfolio_project_versions` are the identical shape, field set matching `Project` (category, services tags, client, year, className, stamp, externalLink, results, credits, seo — `thumbnail` intentionally omitted, confirmed dead/unrendered before the schema was written).
+
+**All editorial content lives on the version row; the entity row holds only what must never be staged: permanent id, lifecycle status, and sortOrder.** This is what makes editing an already-published entity safe by construction, not by convention: a draft save is an `UPDATE ... WHERE service_id = X AND version_type = 'draft'`, and the public site's read path only ever queries `version_type = 'published'` — there is no code path by which a draft edit can reach a live page.
+
+### Permanent entity identity
+
+`services.id` / `portfolio_projects.id` (`service_`/`project_` + `crypto.randomUUID()`) is generated once, at entity creation, and never touched again by any draft save or publish. Both version rows reference it by foreign key (`ON DELETE CASCADE` — a version row has no independent meaning without its parent). Renaming the slug only ever changes a `service_versions.slug`/`portfolio_project_versions.slug` value, never the parent id. Admin routes are ID-based internally (`/admin/services/[id]`, never the slug) for exactly this reason — verified live: Branding's real ID (`service_69d67a4b-8ab8-41da-ad85-c9fd077a7ac4`) stayed identical through a slug-preserving edit, and separately through the earlier cutover-phase regression test's slug-rename-and-publish case.
+
+### Entity-level archive — never touches either version row
+
+`status` on the parent table is the *only* place archived lives. Archiving flips that one column and touches zero version rows — whatever was in the published version row stays exactly as it was, untouched and unreadable publicly (the public query requires `status = 'published'` at the entity level, not just `version_type = 'published'` at the row level). Unarchiving restores public visibility of that same unmodified published content if a published row exists; if the entity was archived before ever being published, unarchiving restores `status = 'draft'` instead — **never accidentally publishing an unpublished draft**. `mutate-service.ts`'s `setServiceArchivedAction` implements exactly this branch, and it's the one place that decides which of the two restore targets applies. Audit events are explicit and distinct: `service.unarchived` is its own action, not folded into `service.updated` the way Phase 15's Media Library unarchive was — a deliberate choice for clearer audit history over copying that precedent.
+
+### sortOrder — immediate, not staged
+
+Lives on the entity table, editable via plain up/down buttons (`ServiceMoveButtons.tsx`), swapping `sortOrder` with the adjacent entity in one transaction. Takes effect immediately on click — reordering is not part of the draft/publish staging model, since staging a reorder alongside content edits was judged unnecessary complexity for a low-risk, easily-reversible action. `moveServiceAction` records `service.reordered` with small metadata (`{ direction, swappedWithId }`).
+
+### Partial slug indexes, and why a global unique constraint doesn't work here
+
+```sql
+CREATE UNIQUE INDEX service_versions_slug_draft_unique
+  ON service_versions (slug) WHERE version_type = 'draft';
+CREATE UNIQUE INDEX service_versions_slug_published_unique
+  ON service_versions (slug) WHERE version_type = 'published';
+```
+(and the `portfolio_project_versions` equivalents.) A single global `UNIQUE(slug)` would reject the seed's own draft+published pair for the same entity, since both start out with identical slugs by design. Two *partial* indexes — one scoped to each version state — solve that, but introduce a real gap: entity A's *published* slug and entity B's *draft* slug live in different partial indexes, so Postgres never compares them against each other. **The database alone does not guarantee a draft slug can never collide across states.**
+
+### Cross-state slug collision — the three-layer answer
+
+1. **DB uniqueness within each version state** — the two partial indexes above, real and enforced.
+2. **Authoritative server validation across both states** — `findSlugCollision()` in `mutate-service.ts` queries `service_versions` for the requested slug belonging to any *other* entity (`serviceId <> excludeId`), checking both `draft` and `published` rows in one query. Called before create, before every draft save, and again *inside* the publish transaction immediately before the promote step (a draft can sit unpublished for a while; something else may have taken the slug since it was last saved).
+3. **DB unique protection again at publication** — the published partial index is the final backstop if a genuine race slips past step 2; a caught `23505` violation is surfaced as a clean human-readable error, never a raw Postgres exception.
+
+This is documented precisely because it would be inaccurate to claim the database alone prevents cross-state collisions — it doesn't, by design; server-side validation is what closes that gap.
+
+### Seeding — one-time, already run, must not run again
+
+`scripts/seed-phase17-services-portfolio.mts` imports `services`/`projects` directly from the TypeScript source (no hand-transcription) and, for each of the 7 services / 4 projects, inserted one entity row plus **identical** draft and published version rows — so the first DB-backed render was byte-identical to what was live immediately before cutover, and a private draft existed to edit from the very first moment. **This script has already run successfully once.** It refuses to run a second time by design — `assertDestinationTablesEmpty()` checks all four destination tables before opening any transaction, and all four now hold real rows (7/14/4/8), so that check fails immediately. The script is retained (not deleted) as migration/bootstrap history, matching how `drizzle/` migration files are kept permanently — but it is inert going forward, not part of the running application, and must not be run again.
+
+### Neon is the public runtime authority; services.ts/projects.ts are frozen fallback
+
+`src/data/services.ts`'s `services` array and `src/data/projects.ts`'s `projects` array are retained **unmodified**, but **no public or admin runtime path reads either array anymore** — verified by direct grep, not just intent. They keep their types, constants (`PROJECT_CATEGORIES`, `SERVICE_STATUSES`, etc.), and pure helpers (`serviceImagePath`, `projectImagePath`, `serviceHref`, `projectHref`, `slugify` reused from `products.ts`), all still genuinely used. The arrays themselves serve two purposes only: they were the seed script's literal source, and they remain a frozen historical reference. This is a deliberate, more conservative choice than Phase 13's product migration (which deleted `product.template.ts` in the same phase as cutover) — actual deletion of the arrays is deferred to a later cleanup phase, once the admin flow has had more real-world use.
+
+Both `Service` and `Project` gained small, **purely additive** type extensions to support this: `id?: string`, `status?: "draft"|"published"|"archived"` (new for `Service`, which previously had no status concept at all; widened for `Project`, which previously only had `"published"|"draft"`), and `mediaAssetId?: string` on `ServiceImage`/`ProjectImage` (the same optional-field extension Phase 15 made to `Media`). Every field is optional, so all 7 existing service entries and all 4 existing project entries in the frozen arrays needed **zero edits** — the extension doesn't touch content, only widens the type.
+
+### `/services` and `/work` runtime cutover
+
+`src/server/queries/services.ts` and `src/server/queries/portfolio.ts` are the sole places anything in the app reads a Service/Project from Neon (public side) — they mirror `queries/catalog.ts` exactly: `INNER JOIN` entity to its `version_type = 'published'` row, `WHERE entity.status = 'published'`, ordered by `sortOrder`, widened `string` columns narrowed back to real union types. Both `/services/[slug]/page.tsx` and `/work/[slug]/page.tsx` switched `dynamicParams` from `false` to `true` (a service/project published since the last build now renders on first request instead of 404ing) and added the same `revalidate = 3600` time-based ISR fallback Product/Store already use — no admin mutation UI existed for Portfolio at cutover time to call `revalidatePath()` directly, so this fallback is what will pick up any direct-database Portfolio content change until Portfolio Admin ships; Services Admin's mutations *do* call `revalidatePath()` directly (see below), same as Product. `Services.tsx`/`Portfolio.tsx` (the homepage sections) became async server components reading the same query modules, mirroring the exact pattern Header/Footer/Hero already established in Phase 14. `getAdjacentProjects()` preserves the exact wrap-around prev/next semantics the old array-backed version had, walking the Neon-ordered (`sortOrder`) list instead of array order — identical behavior immediately after cutover since `sortOrder` was seeded directly from each array's original position.
+
+`ProductDetails.tsx` (rendered on the public `/store/[slug]` page) is the one place outside `/services`/`/work` themselves that read the services array — it resolves a product's `relatedServiceSlug` to show a "related service" link — and is now an async component calling the Neon-backed `getServiceBySlug()`.
+
+### Media Library resolution for Services/Portfolio
+
+`resolveServicesMedia()`/`resolveProjectsMedia()` in the respective query files are direct copies of `resolveProductsMedia()`'s batch-lookup-and-override pattern, extended to also cover the separate `heroImageSrc`/`heroImageAlt`/`heroMediaAssetId` scalar-column shape (not just gallery JSONB arrays). Any `heroImage`/gallery item carrying a `mediaAssetId` has its `src` overridden with the asset's *current* `media_assets.url` before reaching a page component; items with no `mediaAssetId` (every current service/project, post-seed) pass through unchanged, preserving legacy local paths exactly.
+
+### Media Library "Used by" — extended to services and portfolio
+
+`findServicesReferencingMediaAsset()`/`findProjectsReferencingMediaAsset()` in `queries/media.ts` check both `heroMediaAssetId` (a plain column) and gallery (JSONB containment, same `@>` operator as `products.media`) — but unlike Product's single-row usage scan, these check **both** `draft` and `published` version rows and tag each result with which one it came from, since a private draft's media selection is real usage an admin should see before archiving an asset, even though it isn't public yet. `/admin/media/[id]`'s "Used by" block now merges product/service/portfolio results; a published service/project links to its real public page, while a draft-only match shows a label with no link (there's no `/admin/services/[id]` preview link surfaced from there yet, and a private draft has no public URL to link to regardless).
+
+### Services Admin — routes and UX
+
+```
+/admin/services              — list: every entity, any status, plain unpaginated table (7 rows today)
+/admin/services/new           — create (draft only, never public)
+/admin/services/[id]           — detail: "Currently live" vs. "Private draft" side by side, Publish, Archive/Unarchive
+/admin/services/[id]/edit        — edit the DRAFT version
+/admin/services/[id]/preview       — admin-authenticated draft preview, reuses the real public components
+```
+
+No `<select>` elements anywhere in `ServiceForm.tsx` — Service has no category/status field exposed in the form (status is handled entirely by the separate archive/unarchive toggle) — so the Phase 13 "every `<select>` must be controlled" rule has nothing to apply to here. Repeatable arrays (`capabilities`, `deliverables`, `process`, `gallery`) use plain add/remove/move-up/move-down controls (`StringListEditor.tsx`, `ProcessStepsEditor.tsx`, `ServiceGalleryEditor.tsx`) — no drag-and-drop dependency, matching `NavigationForm.tsx`'s established precedent. Hero image (`ServiceHeroField.tsx`) is a single-slot Media Library picker plus manual-path fallback, mirroring `ProductMediaEditor.tsx`'s dual-path pattern. No raw JSON is ever shown to the admin.
+
+### Create → draft → preview → publish → archive/unarchive — the full lifecycle
+
+- **Create**: one permanent id, entity `status = 'draft'`, exactly one draft version row, **no published row** — never publicly visible. Slug checked against the cross-state collision rule before insert. Audit: `service.created`.
+- **Save draft**: always writes only the `version_type = 'draft'` row. The published row (if any) and every public route are untouched by construction — verified in the real acceptance test: the published summary stayed exactly the original text through a Save Draft that changed the draft's summary. Audit: `service.draft_saved`.
+- **Preview**: `/admin/services/[id]/preview` reuses the exact same public components (`ServiceHero`, `ServiceCapabilities`, `ServiceDeliverables`, `ServiceProcess`, `ServiceCTA`, plus `Header`/`Footer`/`BrandTokens`) the live `/services/[slug]` page renders, passed the draft data — not a reconstruction. Requires admin authentication (inside the protected route group); never a public/guessable URL.
+- **Publish**: one transaction — re-check the slug collision, copy every content column from draft to published (creating the published row on first publish), flip entity `status` to `'published'`, audit `service.published`, then `revalidatePath()` for `/`, the old slug (if renamed), the new slug, and the admin list/detail pages.
+- **Archive/Unarchive**: entity-level only, as described above. `ServiceArchiveToggle.tsx` mirrors `MediaStatusToggle.tsx`'s exact single-fieldless-button pattern.
+
+Every mutation in `mutate-service.ts` independently calls `requireAdminUser()` as its first line — not relying on the protected layout's own check, per the rule established since Phase 12. Validation failures inside a transaction are thrown as a typed `ServiceMutationError` (guaranteeing rollback) and caught outside to produce a clean, human-readable error — never a raw Postgres exception reaching the admin form.
+
+### Product Admin cleanup — `relatedServiceSlug` now checks Neon
+
+`products.validate.ts`'s `ProductValidationOptions` gained `validServiceSlugs: readonly string[]`, passed in by the caller rather than importing `services.ts`'s array directly — the same "passed in, not imported" principle already used for every other enum list in that type (avoids a runtime dependency on any specific data source, live or frozen). `mutate-product.ts`'s `validateCandidate()` is now `async`, calling `getPublishedServices()` before validating — **only a currently-published service is a valid `relatedServiceSlug` target**. Both Product Admin dropdown pages (`/admin/products/new`, `/admin/products/[id]/edit`) now fetch `getPublishedServices()` instead of importing the frozen array. No other Product Admin behavior changed.
+
+### Dormant commerce fields — preserved, never surfaced, never silently zeroed
+
+`startingPrice`, `pricingNote`, `turnaround`, `revisions`, `depositAmount`, `purchasable`, `intakeFormSlug`, `cartEligible` do not appear anywhere in `ServiceForm.tsx` or `build-service-form.ts` — there is nothing in the admin form to read these from. `mutate-service.ts`'s `contentToColumns()`/`extractContentColumns()` never reference these 8 columns, so a draft save's `UPDATE` statement simply never touches them — whatever a row already holds (currently `NULL` for all 7 real services) stays exactly as it is. This is structural, not a validation rule: there's no code path that could zero them even by accident, since the columns never appear in any `.set({...})` call this admin makes.
+
+### Real acceptance test — what was genuinely verified
+
+Using your own real edit through `/admin/services` (not seeded, not synthetic): the Branding service's summary was changed to *"Bold brand identity systems built with purpose — from unforgettable logos and typography to signature color palettes and creative direction that keeps your brand consistent, recognizable, and impossible to ignore across every touchpoint."*, saved as a draft, confirmed private (public `/services/branding` still showed the original summary), previewed, and published — the public page updated to the new summary with no source edit, no commit, no redeploy. **A real bug was found and fixed along the way, and it wasn't a code defect**: the first Publish click produced no effect at all (no error, no audit event) — traced to the same session-staleness pattern documented under "Brand Controls" (`requireAdminUser()` correctly redirecting to `/admin/login` because the session had gone stale between page load and the Publish click, before any validation or write code ran). A second Publish click from a freshly-authenticated page succeeded immediately, with no code changes in between — confirming the mutation logic itself was never at fault. Exactly one `service.draft_saved` and one `service.published` audit event exist for this edit, both correctly attributed to the real owner account. **The published Branding summary above is your genuine, live, currently-published copy — real acceptance-test history, not a placeholder to revert.** Throughout: all other 6 services, all 4 portfolio projects, Brand `#E70810`, homepage content, the real Custom Graphic Design product, the one real Media Library asset, and the owner account all stayed untouched, and `customers`/`orders`/`order_lines` stayed at zero.
+
+### Automated regression testing
+
+Since `mutate-service.ts` imports `requireAdminUser()` (which pulls in `next/navigation`, needing live React Server render context unavailable to a standalone script — the same constraint documented under "Brand Controls"), the regression harness combined the *real* read layer (`queries/services.ts`, imported directly — safe, since it has no `next/navigation` dependency) with faithful replications of the mutation layer's exact transaction/audit logic, plus real HTTP requests against a running dev server for every public-visibility claim. 28/28 checks passed: draft-only 404, save-draft leaves published untouched, preview resolves draft, cross-state collision detection, invalid-content rejection, own-entity rename correctly not a false positive, publish copies complete content, first-publish creates the published row, permanent ID stability, old-slug-404/new-slug-200 after a rename, archive/unarchive (including the never-published draft-only case correctly not auto-publishing), reorder swap, Media Library hero/gallery resolution, and correct audit attribution. All temporary entities, versions, and audit rows were deleted immediately after.
+
+### Portfolio Admin — explicitly not built yet, the next remaining step
+
+Everything under "Services Admin — routes and UX" through "Automated regression testing" above describes **Services only**. `portfolio_projects`/`portfolio_project_versions` are seeded, Neon is the public read authority for `/work/[slug]` and the homepage Work section, and the query layer (`queries/portfolio.ts`) is complete — but **no `/admin/portfolio` route of any kind exists yet**: no list, no create, no edit, no preview, no publish, no archive, no Media Library integration for portfolio content. The Portfolio Admin's server-side design (mutation layer, cross-state slug validation, form parsing, array editors for `results`/`credits`/`gallery`) will follow the exact template Services Admin just established — the same relationship Phase 13's product admin had to Phase 14's website-content admin. This is recorded here as a concrete, scoped, near-term next step, not a vague future phase.
 
 ## Rules for creating new components
 

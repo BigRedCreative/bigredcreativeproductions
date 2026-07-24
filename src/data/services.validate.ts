@@ -49,7 +49,12 @@ export function collectServiceValidationErrors(services: Service[]): string[] {
     }
 
     const expectedPrefix = service.slug ? `/images/services/${service.slug}/` : undefined;
-    const checkImagePath = (src: string, field: string) => {
+    // Phase 17 — a Media Library selection resolves `src` to a live Blob
+    // CDN URL (https://...), not a local path, so the local-path/folder
+    // check only applies when there's no mediaAssetId. Exact same
+    // exemption already established for products.validate.ts.
+    const checkImagePath = (src: string, mediaAssetId: string | undefined, field: string) => {
+      if (mediaAssetId) return;
       if (!isLocalImagePath(src)) {
         errors.push(`${label}: ${field} must be a local path, not an external URL ("${src}")`);
         return;
@@ -59,17 +64,24 @@ export function collectServiceValidationErrors(services: Service[]): string[] {
       }
     };
 
-    if (service.heroImage) checkImagePath(service.heroImage.src, "heroImage.src");
+    if (service.heroImage) checkImagePath(service.heroImage.src, service.heroImage.mediaAssetId, "heroImage.src");
 
     if (service.gallery) {
       const seenGallerySrc = new Set<string>();
       service.gallery.forEach((image, i) => {
-        checkImagePath(image.src, `gallery[${i}].src`);
+        checkImagePath(image.src, image.mediaAssetId, `gallery[${i}].src`);
         if (seenGallerySrc.has(image.src)) {
           errors.push(`${label}: duplicate gallery image "${image.src}"`);
         } else {
           seenGallerySrc.add(image.src);
         }
+      });
+    }
+
+    if (service.process) {
+      service.process.forEach((step, i) => {
+        if (!step.title?.trim()) errors.push(`${label}: process[${i}].title is required`);
+        if (!step.description?.trim()) errors.push(`${label}: process[${i}].description is required`);
       });
     }
   }

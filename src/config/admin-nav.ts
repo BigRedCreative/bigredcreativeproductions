@@ -12,7 +12,7 @@ export const adminNavItems: AdminNavItem[] = [
   { label: "Orders", href: "/admin/orders", available: true },
   { label: "Customers", href: "/admin/customers", available: true },
   { label: "Products", href: "/admin/products", available: true },
-  { label: "Services", available: false },
+  { label: "Services", href: "/admin/services", available: true },
   { label: "Portfolio", available: false },
   { label: "Media", href: "/admin/media", available: true },
   { label: "Website", href: "/admin/website", available: true },

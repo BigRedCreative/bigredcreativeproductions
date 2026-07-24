@@ -57,6 +57,13 @@
       "when": 1784872825665,
       "tag": "0007_friendly_scarecrow",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1784910692764,
+      "tag": "0008_minor_hiroim",
+      "breakpoints": true
     }
   ]
 }

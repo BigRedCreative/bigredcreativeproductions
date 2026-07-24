@@ -1,20 +1,24 @@
-import { services } from "./services";
 import { MEDIA_TYPES } from "./media";
 import { isLocalMediaPath } from "./media-path";
 import type { Product } from "./products";
 
-// Type/status/category/purchase-mode lists are passed in (not imported) so
-// this module has no runtime dependency on products.ts — avoids a circular
-// import since products.ts calls validateProducts() with its own data at
-// module load. Mirrors the same avoidance pattern used by
-// projects.validate.ts. `services` is safe to import directly: services.ts
-// never imports from products.ts, so there's no cycle there.
+// Type/status/category/purchase-mode/service-slug lists are passed in (not
+// imported) so this module has no runtime dependency on products.ts or a
+// live data source — avoids a circular import since products.ts calls
+// validateProducts() with its own data at module load, and keeps this
+// validator synchronous. Phase 17: validServiceSlugs used to be computed
+// by importing services.ts's frozen array directly; now that Neon is
+// authoritative for services, the caller (src/server/mutate-product.ts)
+// queries getPublishedServices() and passes the resulting slugs in here —
+// same "passed in, not imported" principle already applied to every other
+// enum list in this type.
 export type ProductValidationOptions = {
   validTypes: readonly string[];
   validStatuses: readonly string[];
   validCategories: readonly string[];
   validPurchaseModes: readonly string[];
   validAddOnChargeTypes: readonly string[];
+  validServiceSlugs: readonly string[];
 };
 
 function isNonNegativeInteger(value: number): boolean {
@@ -34,12 +38,19 @@ function validateMoneyField(
 
 export function collectProductValidationErrors(
   products: Product[],
-  { validTypes, validStatuses, validCategories, validPurchaseModes, validAddOnChargeTypes }: ProductValidationOptions,
+  {
+    validTypes,
+    validStatuses,
+    validCategories,
+    validPurchaseModes,
+    validAddOnChargeTypes,
+    validServiceSlugs: validServiceSlugsList,
+  }: ProductValidationOptions,
 ): string[] {
   const errors: string[] = [];
   const seenIds = new Set<string>();
   const seenSlugs = new Set<string>();
-  const validServiceSlugs = new Set(services.map((service) => service.slug));
+  const validServiceSlugs = new Set(validServiceSlugsList);
 
   for (const product of products) {
     const label = product.id || product.slug || product.title || "(unnamed product)";

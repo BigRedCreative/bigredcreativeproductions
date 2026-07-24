@@ -1,11 +1,11 @@
-import { getFeaturedProjects } from "@/data/projects";
+import { getFeaturedProjects } from "@/server/queries/portfolio";
 import { portfolioIntro } from "@/data/homepage";
 import { sectionAnchors } from "@/config/sections";
 import SectionHeading from "./ui/SectionHeading";
 import PortfolioGrid from "./PortfolioGrid";
 
-export default function Portfolio() {
-  const featuredProjects = getFeaturedProjects();
+export default async function Portfolio() {
+  const featuredProjects = await getFeaturedProjects();
   return (
     <section className="work section" id={sectionAnchors.portfolio}>
       <SectionHeading

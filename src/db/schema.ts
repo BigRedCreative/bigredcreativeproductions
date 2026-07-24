@@ -9,11 +9,13 @@ import {
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
-import { relations } from "drizzle-orm";
+import { relations, sql } from "drizzle-orm";
 import type { Media } from "@/data/media";
 import type { ProductAddOn, ProductOption, ProductPackage, ProductPricing } from "@/data/products";
 import type { CartAddOnSelection, CartOptionSelection, CartPackageSelection } from "@/data/cart";
 import type { OrderPricingSummary } from "@/data/orders";
+import type { ServiceImage, ServiceProcessStep } from "@/data/services";
+import type { ProjectImage, ProjectExternalLink, ProjectResult, ProjectCredit } from "@/data/projects";
 
 // Server-side persistence layer — see CLAUDE.md "Backend + database
 // foundation" for the full architecture writeup. This schema deliberately
@@ -486,3 +488,196 @@ export const brandSettings = pgTable("brand_settings", {
   logoWhiteMediaAssetId: text("logo_white_media_asset_id").references(() => mediaAssets.id, { onDelete: "set null" }),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+// ---------------------------------------------------------------------
+// Phase 17 — Services + Portfolio Admin. Staged draft/publish editing,
+// per entity, at real Neon-backed scale (many rows, not a singleton pair
+// like homepage_content/brand_settings). The model is a permanent-identity
+// "entity" table plus a "versions" table holding at most two rows per
+// entity — one `draft`, one `published` — enforced by a unique
+// (entityId, versionType) index rather than application logic.
+//
+// ALL editorial content (title, slug, media, SEO, everything a visitor
+// would see) lives on the version row. The entity row holds only what
+// must never be "staged": permanent id, lifecycle status, and admin sort
+// order. This is what makes editing an already-published entity safe by
+// construction — a draft save is an UPDATE against the version_type =
+// 'draft' row only; the public site always reads version_type =
+// 'published', so it is structurally impossible for a draft edit to leak
+// into a live page. Publishing is a single transaction that copies every
+// content column from the draft row onto the published row (upserting the
+// published row if this is the entity's first-ever publish) and flips the
+// entity's status to 'published' if it wasn't already.
+//
+// Archiving is deliberately an ENTITY-level status flip only — it never
+// touches either version row, so un-archiving restores exactly what was
+// there before with zero data loss. See CLAUDE.md "Services + Portfolio
+// Admin" for the full model writeup, including why this diverges from
+// Product's simpler single-row-with-status model.
+// ---------------------------------------------------------------------
+export const CONTENT_ENTITY_STATUSES = ["draft", "published", "archived"] as const;
+export type ContentEntityStatus = (typeof CONTENT_ENTITY_STATUSES)[number];
+
+export const CONTENT_VERSION_TYPES = ["draft", "published"] as const;
+export type ContentVersionType = (typeof CONTENT_VERSION_TYPES)[number];
+
+export const services = pgTable("services", {
+  // "service_" + crypto.randomUUID() — the ONE thing that never changes
+  // across a rename, a draft edit, or a publish.
+  id: text("id").primaryKey(),
+  status: text("status").notNull().$type<ContentEntityStatus>(),
+  // Immediate/current, NOT staged — reordering the homepage service rows
+  // takes effect right away via plain up/down admin buttons, mirroring
+  // navigation_items.sortOrder exactly. Staging a reorder alongside
+  // content edits was judged unnecessary complexity for what is, in
+  // practice, a rare and low-risk action to see reflected immediately.
+  sortOrder: integer("sort_order").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const serviceVersions = pgTable(
+  "service_versions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    serviceId: text("service_id")
+      .notNull()
+      .references(() => services.id, { onDelete: "cascade" }),
+    versionType: text("version_type").notNull().$type<ContentVersionType>(),
+    // Slug lives on the VERSION row on purpose — a draft can stage a slug
+    // change and preview it without the live public route ever moving.
+    // Uniqueness is enforced by two PARTIAL indexes below (one scoped to
+    // version_type='draft', one to version_type='published'), not one
+    // global unique(slug) — a global constraint would reject the seed's
+    // own draft+published pair for the same entity, since both start with
+    // identical slugs by design. This means the database alone does NOT
+    // prevent entity A's published slug from colliding with entity B's
+    // draft slug (different partial indexes never see each other) —
+    // server-side validation is authoritative for that cross-state case;
+    // see CLAUDE.md "Services + Portfolio Admin" for the full writeup.
+    slug: text("slug").notNull(),
+    title: text("title").notNull(),
+    shortTitle: text("short_title").notNull(),
+    serviceNumber: text("service_number").notNull(),
+    // Staged, not immediate — a draft's featured toggle must never affect
+    // the live homepage until that draft is published (see CLAUDE.md).
+    featured: boolean("featured").notNull().default(false),
+    summary: text("summary").notNull(),
+    fullDescription: text("full_description").notNull(),
+    capabilities: jsonb("capabilities").notNull().$type<string[]>().default([]),
+    deliverables: jsonb("deliverables").notNull().$type<string[]>().default([]),
+    process: jsonb("process").notNull().$type<ServiceProcessStep[]>().default([]),
+    ctaLabel: text("cta_label").notNull(),
+    // Same optional-mediaAssetId-plus-legacy-path-fallback pattern already
+    // proven on Product.media (Phase 15) and brand_settings (Phase 16).
+    heroMediaAssetId: text("hero_media_asset_id").references(() => mediaAssets.id, { onDelete: "set null" }),
+    heroImageSrc: text("hero_image_src"),
+    heroImageAlt: text("hero_image_alt"),
+    gallery: jsonb("gallery").$type<ServiceImage[]>(),
+    seo: jsonb("seo").notNull().$type<{ title: string; description: string }>(),
+    // Commerce extension fields — carried forward unpopulated, exactly as
+    // in src/data/services.ts today. Nothing reads or renders these yet.
+    startingPrice: integer("starting_price"),
+    pricingNote: text("pricing_note"),
+    turnaround: text("turnaround"),
+    revisions: text("revisions"),
+    depositAmount: integer("deposit_amount"),
+    purchasable: boolean("purchasable"),
+    intakeFormSlug: text("intake_form_slug"),
+    cartEligible: boolean("cart_eligible"),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("service_versions_service_id_version_type_unique").on(table.serviceId, table.versionType),
+    // Partial unique indexes — see the `slug` column comment above for why
+    // this is two scoped constraints instead of one global one.
+    uniqueIndex("service_versions_slug_draft_unique")
+      .on(table.slug)
+      .where(sql`${table.versionType} = 'draft'`),
+    uniqueIndex("service_versions_slug_published_unique")
+      .on(table.slug)
+      .where(sql`${table.versionType} = 'published'`),
+  ],
+);
+
+export const servicesRelations = relations(services, ({ many }) => ({
+  versions: many(serviceVersions),
+}));
+
+export const serviceVersionsRelations = relations(serviceVersions, ({ one }) => ({
+  service: one(services, { fields: [serviceVersions.serviceId], references: [services.id] }),
+}));
+
+// portfolio_projects / portfolio_project_versions — identical staged-editing
+// shape to services/service_versions above, field set matching the Project
+// type in src/data/projects.ts. `thumbnail` is deliberately NOT carried
+// into this schema — confirmed dead/unrendered (ProjectCard.tsx never
+// reads it), see CLAUDE.md. className is a required field constrained at
+// the application/validation layer to the fixed set of real CSS variants
+// ("project-red" | "project-dark" | "project-cream") — never free text in
+// the admin UI, since a typo'd value would silently break styling with
+// nothing to catch it.
+export const portfolioProjects = pgTable("portfolio_projects", {
+  // "project_" + crypto.randomUUID().
+  id: text("id").primaryKey(),
+  status: text("status").notNull().$type<ContentEntityStatus>(),
+  sortOrder: integer("sort_order").notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const portfolioProjectVersions = pgTable(
+  "portfolio_project_versions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => portfolioProjects.id, { onDelete: "cascade" }),
+    versionType: text("version_type").notNull().$type<ContentVersionType>(),
+    // Same partial-index uniqueness split as service_versions.slug above —
+    // scoped to draft/published separately, not globally unique.
+    slug: text("slug").notNull(),
+    title: text("title").notNull(),
+    shortTitle: text("short_title").notNull(),
+    category: text("category").notNull(),
+    // Free-form descriptive tags, NOT a foreign key to the services table
+    // above — matches the existing, deliberate Project.services behavior
+    // exactly (see CLAUDE.md "Categories and services").
+    services: jsonb("services").notNull().$type<string[]>().default([]),
+    summary: text("summary").notNull(),
+    fullDescription: text("full_description").notNull(),
+    // Never fabricated — stays null until real, confirmed information
+    // exists, exactly matching the existing rule for Project.client/year.
+    client: text("client"),
+    year: text("year"),
+    featured: boolean("featured").notNull().default(false),
+    className: text("class_name").notNull(),
+    stamp: text("stamp").notNull(),
+    heroMediaAssetId: text("hero_media_asset_id").references(() => mediaAssets.id, { onDelete: "set null" }),
+    heroImageSrc: text("hero_image_src"),
+    heroImageAlt: text("hero_image_alt"),
+    gallery: jsonb("gallery").$type<ProjectImage[]>(),
+    externalLink: jsonb("external_link").$type<ProjectExternalLink | null>(),
+    results: jsonb("results").$type<ProjectResult[] | null>(),
+    credits: jsonb("credits").$type<ProjectCredit[] | null>(),
+    seo: jsonb("seo").notNull().$type<{ title: string; description: string }>(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    uniqueIndex("portfolio_project_versions_project_id_version_type_unique").on(table.projectId, table.versionType),
+    uniqueIndex("portfolio_project_versions_slug_draft_unique")
+      .on(table.slug)
+      .where(sql`${table.versionType} = 'draft'`),
+    uniqueIndex("portfolio_project_versions_slug_published_unique")
+      .on(table.slug)
+      .where(sql`${table.versionType} = 'published'`),
+  ],
+);
+
+export const portfolioProjectsRelations = relations(portfolioProjects, ({ many }) => ({
+  versions: many(portfolioProjectVersions),
+}));
+
+export const portfolioProjectVersionsRelations = relations(portfolioProjectVersions, ({ one }) => ({
+  project: one(portfolioProjects, { fields: [portfolioProjectVersions.projectId], references: [portfolioProjects.id] }),
+}));

@@ -1,10 +1,10 @@
-import { services } from "@/data/services";
+import { getPublishedServices } from "@/server/queries/services";
 import { createProductAction } from "@/server/mutate-product";
 import { getActiveImageAssetsForPicker } from "@/server/queries/media";
 import ProductForm from "@/components/admin/ProductForm";
 
 export default async function NewProductPage() {
-  const mediaAssets = await getActiveImageAssetsForPicker();
+  const [mediaAssets, services] = await Promise.all([getActiveImageAssetsForPicker(), getPublishedServices()]);
 
   return (
     <div>

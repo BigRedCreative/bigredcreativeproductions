@@ -1,8 +1,16 @@
 import { validateServices } from "./services.validate";
 
+// Phase 17 — optional link to a Media Library asset (media_assets.id),
+// the exact same non-breaking extension Phase 15 made to the catalog's
+// Media type. `src` stays always populated (frozen at selection time);
+// src/server/queries/services.ts re-resolves it from the live media_assets
+// row before this reaches a page, same as Product.media. Every entry in
+// the fallback array below has no mediaAssetId, so this needs no edits
+// there.
 export type ServiceImage = {
   src: string;
   alt: string;
+  mediaAssetId?: string;
 };
 
 export type ServiceProcessStep = {
@@ -10,7 +18,19 @@ export type ServiceProcessStep = {
   description: string;
 };
 
+// Phase 17 — Neon is now the runtime authority for services (see
+// src/server/queries/services.ts); this array is retained only as frozen
+// seed/reference data. `id`/`status` are optional specifically so every
+// entry below still type-checks unmodified: `id` is populated only by the
+// database read path (no component reads it), and `status` follows the
+// exact same "undefined means published" idiom already established by
+// Project.status, now including "archived" as a third possible value.
+export const SERVICE_STATUSES = ["draft", "published", "archived"] as const;
+export type ServiceStatus = (typeof SERVICE_STATUSES)[number];
+
 export type Service = {
+  id?: string;
+  status?: ServiceStatus;
   slug: string;
   title: string;
   shortTitle: string;
