@@ -2,6 +2,7 @@ import { notFound } from "next/navigation";
 import { getProductById } from "@/server/queries/catalog";
 import { services } from "@/data/services";
 import { updateProductAction } from "@/server/mutate-product";
+import { getActiveImageAssetsForPicker } from "@/server/queries/media";
 import ProductForm from "@/components/admin/ProductForm";
 
 type EditProductPageProps = {
@@ -13,7 +14,7 @@ type EditProductPageProps = {
 // database-backed catalog".
 export default async function EditProductPage({ params }: EditProductPageProps) {
   const { id } = await params;
-  const product = await getProductById(id);
+  const [product, mediaAssets] = await Promise.all([getProductById(id), getActiveImageAssetsForPicker()]);
 
   if (!product) {
     notFound();
@@ -26,6 +27,7 @@ export default async function EditProductPage({ params }: EditProductPageProps) 
         action={updateProductAction.bind(null, id)}
         initialProduct={product}
         services={services.map((service) => ({ slug: service.slug, title: service.title }))}
+        mediaAssets={mediaAssets}
         submitLabel="Save Changes"
       />
     </div>

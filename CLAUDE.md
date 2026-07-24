@@ -75,7 +75,9 @@ src/
         "A controlled-select bug, and why every admin <select> is controlled now")
     ProductOptionsEditor.tsx, ProductPackagesEditor.tsx, ProductAddOnsEditor.tsx, ProductMediaEditor.tsx
       — repeatable array-field sub-editors used inside ProductForm, each serializing its
-        local state into one hidden JSON form field on submit
+        local state into one hidden JSON form field on submit. As of Phase 15,
+        ProductMediaEditor.tsx also renders a "Choose from Media Library" picker alongside its
+        original manual-path input — see "Media Library" → "Product integration"
     SiteSettingsForm.tsx, NavigationForm.tsx, ContactContentForm.tsx, HeroContentForm.tsx, PublishHeroButton.tsx,
     SocialLinksEditor.tsx
       — Phase 14 website-content forms, see "Website content admin". SiteSettingsForm is shared by
@@ -84,6 +86,11 @@ src/
         editors following the exact same add/remove/serialize-to-hidden-field pattern as
         ProductOptionsEditor. HeroContentForm edits the DRAFT homepage_content row only;
         PublishHeroButton is a separate, fieldless action that copies draft → published.
+    MediaUploadForm.tsx, MediaFilterBar.tsx, MediaEditForm.tsx, MediaStatusToggle.tsx, MediaReplaceForm.tsx
+      — the Phase 15 Media Library admin UI, see "Media Library". MediaFilterBar mirrors
+        ProductsFilterBar's native-GET-form pattern exactly. MediaStatusToggle is a single
+        fieldless button bound to either "archive" or "unarchive" depending on current status.
+        MediaReplaceForm uploads a new file under the SAME permanent asset id.
 
   data/
     homepage.ts    — homepage copy (hero, ticker, manifesto, statement, studio, process, contact
@@ -97,7 +104,9 @@ src/
     projects.ts        — the full portfolio data model + helpers (see "Portfolio system" below)
     projects.validate.ts — runtime validation for project data, run automatically on import
     project.template.ts    — copy-paste starter template for a new project (not used by the app)
-    media.ts         — shared Media type (image/video) for the catalog system
+    media.ts         — shared Media type (image/video) for the catalog system. As of Phase 15,
+                          each Media item may optionally carry a `mediaAssetId` linking it to a
+                          Media Library asset — see "Media Library" for the full model
     media-path.ts       — isLocalMediaPath(): the local-vs-external-URL check, extracted in Phase 14 out
                           of products.validate.ts so website-content validation reuses the exact same
                           rule instead of a second copy
@@ -130,8 +139,9 @@ src/
   db/
     schema.ts   — Drizzle table/sequence definitions (admin_users, audit_log, products, customers,
                    orders, order_lines, order_number_seq, site_settings, navigation_items,
-                   homepage_content, contact_content) — see "Backend + database foundation",
-                   "Product admin + database-backed catalog", and "Website content admin"
+                   homepage_content, contact_content, media_assets) — see "Backend + database
+                   foundation", "Product admin + database-backed catalog", "Website content
+                   admin", and "Media Library"
     index.ts      — getDb(): lazy, server-only Neon/Drizzle client, throws only when actually called
 
   server/
@@ -162,14 +172,33 @@ src/
     queries/catalog.ts        — server-only, database-backed product reads: getPublishedProducts(),
                           getProductBySlug(), getProductById(), listProducts() (admin), etc. — the
                           ONE place anything in the app reads a Product from Neon
+    validate-media-upload.ts   — validateImageUpload(): byte-sniffs real PNG/JPEG/WebP magic bytes,
+                          cross-checks against image-size's own format detection, enforces the
+                          8 MB cap on actual bytes read — see "Media Library"
+    media-storage.ts        — buildStorageKey()/uploadImageBlob()/deleteBlob(): the ONE place this
+                          app talks to Vercel Blob (OIDC-authenticated); storage keys are always
+                          server-generated UUIDs, never the client's filename
+    mutate-media.ts        — uploadMediaAction()/updateMediaAssetAction()/setMediaAssetStatusAction()/
+                          replaceMediaAssetAction(): the only place a media_assets row is written
+                          — see "Media Library"
     queries/site-content.ts     — server-only, database-backed website-content reads: getSiteSettings(),
                           getNavigation(), getPublishedHeroContent(), getContactContent(), plus
                           admin-only raw-row variants — the ONE place anything in the app reads
                           Phase 14 website content from Neon; every public read is field-level-
                           fallback-safe against the matching src/config or src/data constant
+    queries/media.ts        — server-only, database-backed media reads: listMediaAssets() (admin,
+                          paginated/filtered/searched), getMediaAssetById(), getMediaAssetsByIds()
+                          (batch, used by catalog.ts's resolution step), getActiveImageAssetsForPicker(),
+                          findProductsReferencingMediaAsset() (the query-time usage scan) — the ONE
+                          place anything in the app reads a media_assets row — see "Media Library"
 
   auth.ts                — Auth.js v5 config (Google OAuth, JWT sessions, no adapter tables)
   proxy.ts                — Next.js 16's proxy convention (not middleware.ts) — admin fast-path redirect only
+
+next.config.ts (project root) — didn't exist before Phase 15; now configures images.remotePatterns
+(the exact hostname for this project's Vercel Blob store, not a wildcard) and
+experimental.serverActions.bodySizeLimit (see "Media Library" → "Upload transport limit vs.
+application limit").
 ```
 
 drizzle.config.ts (project root) and drizzle/ (generated, versioned migration SQL) are Drizzle Kit's
@@ -186,6 +215,7 @@ CLI-only files — see "Backend + database foundation" → "Database migrations"
 - **Services list** → `src/data/services.ts`
 - **Portfolio projects** → `src/data/projects.ts`
 - **Catalog products** — created/edited/published/archived through **Admin → Products → New Product** (`/admin/products`), never by editing source code — see "Product admin + database-backed catalog"
+- **Product images/artwork** — uploaded and selected through **Admin → Media** (`/admin/media`) and the product edit form's "Choose from Media Library" picker — see "Media Library". Manually-typed local paths under `public/images/products/[slug]/` still work exactly as before; the two approaches coexist.
 - **Store index page copy** (heading, intro, empty state) → `src/data/store.ts`
 - **Colors, spacing, shadows, borders, durations** → `src/app/globals.css` `:root` custom properties (mirrored for reference in `src/config/theme.ts`, but globals.css is the source of truth the browser actually uses)
 - **Section order / anchor IDs / enabling-disabling a section** → `src/config/sections.ts`, then keep `src/app/page.tsx`'s JSX order in sync
@@ -910,11 +940,13 @@ Next.js 16 **renamed** the `middleware.ts` file convention to `proxy.ts` (export
 /admin/website/navigation        — header navigation editor (protected)
 /admin/website/contact         — contact section editor (protected)
 /admin/website/seo            — SEO & sharing (protected)
+/admin/media               — media library grid: upload, search, filter, pagination (protected) — see "Media Library"
+/admin/media/[id]             — media detail: preview, alt/caption edit, archive/unarchive, replace (protected)
 ```
 
 Route-group structure: `src/app/admin/layout.tsx` (top-level — imports the admin stylesheet, sets `robots: { index: false, follow: false }`, does **no** auth check) wraps everything, including `login/` and `access-denied/`, which sit as siblings outside the `(protected)` route group. `src/app/admin/(protected)/layout.tsx` is what actually calls `requireAdminUser()` and renders the sidebar/header shell — only routes inside that group are protected. Route groups (`(protected)`) don't appear in the URL, so `/admin/(protected)/orders/page.tsx` serves `/admin/orders` exactly as shown above.
 
-**Reserved, not built:** `/admin/services`, `/admin/portfolio`, `/admin/media`, `/admin/settings`, `/admin/brain` — listed in `src/config/admin-nav.ts`'s `adminNavItems` with `available: false`, rendered in the sidebar as plain disabled text with a "Coming later" badge, **never a real `<a>`/`<Link>`, never a working href.** Add a route here only when it actually exists. `/admin/products` (Phase 13) and `/admin/website` (Phase 14) are both `available: true` now.
+**Reserved, not built:** `/admin/services`, `/admin/portfolio`, `/admin/settings`, `/admin/brain` — listed in `src/config/admin-nav.ts`'s `adminNavItems` with `available: false`, rendered in the sidebar as plain disabled text with a "Coming later" badge, **never a real `<a>`/`<Link>`, never a working href.** Add a route here only when it actually exists. `/admin/products` (Phase 13), `/admin/website` (Phase 14), and `/admin/media` (Phase 15) are all `available: true` now.
 
 **No public navigation ever links to `/admin`** — reachable only by its direct URL, and excluded from search indexing via the layout's `robots` metadata.
 
@@ -1193,6 +1225,126 @@ Dynamic favicon management (the existing static Next.js `favicon.ico` file-conve
 - **Brand controls (colors, fonts, buttons)** — `src/app/globals.css`'s `:root` design tokens (documented under "Colors, spacing, shadows, borders, durations" above) remain code-only this phase. A future "Branding" expansion could move a curated subset (primary/accent colors, button styles) into `site_settings` or a dedicated table the same way logos moved here — deliberately not started this phase, since it risks the site's established visual identity if exposed to unrestricted admin editing without real guardrails.
 - **Services Admin / Portfolio Admin** — `services.ts`/`projects.ts` remain fully code-owned, exactly as Phase 13 already documented as out of scope. This phase's query/mutation/validation/audit pattern (`queries/site-content.ts`, `build-website-content-form.ts`, `validate-website-content.ts`, `mutate-website-content.ts`) is the template a future Services/Portfolio Admin would most naturally follow, the same way Phase 13's product admin became this phase's own template.
 - **Big Red Brain / Obsidian boundary** — unchanged from every prior phase's documentation of this boundary. `site_settings`/`navigation_items`/`homepage_content`/`contact_content` are all **public-facing content**, not private operational data — there is no privacy concern in a future AI layer reading *published* website content. The boundary that matters is unchanged: customer/order/payment/internal-note data stays private and must never automatically become AI-accessible context, exactly as documented under "Checkout + Order foundation" and "Backend + database foundation." No AI or Obsidian integration exists in this codebase yet.
+
+## Media Library
+
+**Status: a real, working Media Library — upload, browse, edit, archive, and select images for products — backed by Vercel Blob (the "BigRedMedia" store) and a new `media_assets` table, live-tested end to end with a real uploaded image attached to the real Custom Graphic Design product.** Still no video upload/processing, no AI alt-text generation, and no website-content (logo/hero/OG image) wiring yet — those remain either deferred or explicitly out of scope, see below.
+
+### Storage: Vercel Blob, authenticated via OIDC — not a long-lived token
+
+The store is named **BigRedMedia**, connected to this Vercel project. Authentication uses **Vercel's OIDC federation**, not the older `BLOB_READ_WRITE_TOKEN` pattern: `@vercel/blob` (2.x) auto-detects two environment variables —
+
+- `VERCEL_OIDC_TOKEN` — a **short-lived** identity token. Expires; local development refreshes it by re-running `vercel env pull` (or restarting `vercel dev`). This is expected, ordinary behavior, not an error condition.
+- `BLOB_STORE_ID` — the BigRedMedia store's stable id (`store_...`). Does not expire.
+
+Both must be populated together — the SDK's own auth-resolution logic requires `VERCEL_OIDC_TOKEN` **and** either an explicit `storeId` or `BLOB_STORE_ID` before it will attempt OIDC auth at all; missing either produces a clean, generic auth error, never a leaked credential. `BLOB_READ_WRITE_TOKEN` is documented in `.env.example` only as a legacy/alternative fallback — **unused and unset** under this project's actual OIDC setup. Neither variable is ever `NEXT_PUBLIC_`-prefixed. `src/server/media-storage.ts` is the one place this app talks to Vercel Blob at all.
+
+**Why Vercel Blob over Cloudinary/S3/Supabase Storage:** ties directly into the existing Vercel project/env (no new vendor account beyond what already exists), CDN delivery and public URLs out of the box, no IAM/CORS setup S3 would require, no vendor sprawl the way Supabase Storage would add (this project uses Neon for its database, not Supabase, anywhere). Full reasoning recorded in the Phase 15 architecture approval.
+
+### `media_assets` — metadata/reference only, no binary data in Neon
+
+```
+id                    text PK          -- "media_" + crypto.randomUUID(), matching Product.id's "prod_" convention
+storageProvider       text not null    -- "vercel-blob" today; exists so a future provider swap needs no schema change
+storageKey            text not null    -- the Blob pathname, e.g. "media/<uuid>.png" — used for deletion
+url                   text not null    -- the public CDN URL actually rendered
+type                  text not null    -- "image" | "video" (MEDIA_ASSET_TYPES)
+mimeType              text not null
+filename              text not null    -- display filename (may differ from what's stored on disk)
+originalFilename      text not null    -- as uploaded, for reference/audit
+width / height        integer, nullable
+sizeBytes             integer not null
+alt                   text not null default ''   -- encouraged, editable; empty allowed for an
+                                                     unattached asset, required once actually used
+caption               text, nullable
+status                text not null    -- "active" | "archived" (MEDIA_ASSET_STATUSES)
+createdByAdminUserId  uuid references admin_users(id) on delete set null
+createdAt / updatedAt timestamptz not null default now()
+```
+
+Added via `drizzle/0006_messy_rage.sql` — a single `CREATE TABLE` plus one FK, no changes to any existing table, no seed rows (starts empty, same as `audit_log` did). Migrations 0000–0005 remain untouched by this or any later Phase 15 migration.
+
+### Upload validation — allowlist-based, never trusts the browser
+
+`src/server/validate-media-upload.ts`'s `validateImageUpload()` is the one place an uploaded file's real bytes get inspected:
+
+1. **Byte-sniffs real magic bytes** for PNG/JPEG/WebP — never trusts the browser's declared filename or `Content-Type`.
+2. **Cross-checks** against `image-size`'s own independent format detection as defense in depth (and reads real width/height from it, wrapped in try/catch for a truncated/corrupt file).
+3. Enforces the **8 MB application limit** (`MAX_IMAGE_UPLOAD_BYTES = 8 * 1024 * 1024`) on the actual bytes read, never a client-reported size.
+
+**SVG uploads are prohibited entirely.** SVG can carry `<script>`/event-handler attributes; the allowlist (PNG/JPEG/WebP only) rejects everything else — including SVG, executables, HTML — by construction, with no denylist to keep complete. The business's existing trusted SVGs (`public/brand/logo-horizontal.svg`, `logo-white.svg`, `monogram.svg`) are developer-placed, code-reviewed files, untouched by and unrelated to this system.
+
+### Upload transport limit vs. application limit — two different numbers, on purpose
+
+Next.js Server Actions default to a **1 MB** request-body limit, entirely independent of and unrelated to the application's own image policy — this was hit and fixed live: the first real acceptance-test upload failed with `Body exceeded 1 MB limit` before `uploadMediaAction()` ever ran. The fix, in `next.config.ts` (a file that didn't exist before Phase 15):
+
+```ts
+experimental: {
+  serverActions: {
+    bodySizeLimit: "9mb",
+  },
+},
+```
+
+**9 MB is the transport ceiling only** — just enough above the real 8 MB file limit to cover multipart/form-data overhead (boundary strings, headers, the alt/caption fields). `MAX_IMAGE_UPLOAD_BYTES` in `validate-media-upload.ts` is the actual, unchanged, authoritative 8 MB policy — raising the transport ceiling was never allowed to mean raising what the application actually accepts, and it doesn't. Confirmed live: a request that failed at the 1 MB transport limit left **zero** trace anywhere — no Blob object written, no `media_assets` row, no audit event, verified by directly listing the Blob store's `media/` prefix, not just by inspecting Neon.
+
+`next.config.ts` also holds `images.remotePatterns`, scoped to the **exact** BigRedMedia hostname (not a wildcard) — required because `next/image`'s optimizer refuses to render any external hostname that isn't explicitly allow-listed. This hostname is a public CDN address, not a secret. Local `/public` images are completely unaffected — `remotePatterns` only ever applies to `http(s)://` sources.
+
+### `/admin/media` — the library
+
+```
+/admin/media        — grid: thumbnail, filename, type, dimensions, size, status; upload form; search/filter/pagination
+/admin/media/[id]      — preview, alt/caption edit, archive/unarchive, replace file, "Used by" list
+```
+
+Same plain server-rendered patterns already established elsewhere in this admin — no drag-and-drop library, no cropping tool, no heavy media-management dependency. `MediaFilterBar` mirrors `ProductsFilterBar`'s native `<form method="GET">` pattern exactly. `src/config/admin-nav.ts`'s "Media" entry is now `available: true`.
+
+### Alt text, captions, archive/unarchive
+
+`MediaEditForm` edits `alt`/`caption` directly (`updateMediaAssetAction`). `MediaStatusToggle` is a single fieldless button bound to whichever transition applies (`archived` or back to `active`) — **archiving never deletes the underlying Blob or breaks any live reference**; it only removes the asset from the picker's default (`active`) list and the library's default filtered view. No hard-delete action exists anywhere in the admin, mirroring the exact precedent already established for products.
+
+### Replace — recoverability over immediate cleanup
+
+`replaceMediaAssetAction` (`MediaReplaceForm`) preserves the **permanent `media_assets.id`**, uploads the new file under a **brand-new immutable storage key**, updates `url`/`storageKey`/dimensions/size to point at it, and revalidates every page the usage scan (below) finds currently referencing that asset. **The previous Blob is deliberately left in storage, not deleted** — this was an explicit Phase 15 decision favoring recoverability over immediate cleanup, not an oversight. `deleteBlob()` in `media-storage.ts` exists and is used only for rolling back a blob that was uploaded moments ago in the same failed request (nothing could reference that brand-new key yet) — never for a superseded "replace" blob. **Documented here as a known, intentional gap: cleaning up orphaned previous-version blobs is a future storage-maintenance task, not solved this phase.** No complicated version-history system was built to compensate — just this one documented follow-up.
+
+### Product integration — `mediaAssetId`, resolved live, legacy paths untouched
+
+`src/data/media.ts`'s `Media` type gained one optional field:
+
+```ts
+type Media = {
+  type: MediaType;
+  src: string;       // always populated — frozen at the moment an asset was chosen
+  alt: string;
+  poster?: string;
+  caption?: string;
+  mediaAssetId?: string;  // Phase 15 — optional link to a media_assets row
+};
+```
+
+`ProductMediaEditor.tsx` now offers **"Choose from Media Library"** as a picker alongside — not replacing — the original manual-path text input. Selecting a thumbnail sets both `src` (so the entry works immediately, even before any live resolution) and `mediaAssetId`. **Legacy manually-typed entries — including the real product's original `hero.png` reference — are completely unaffected** and continue to validate exactly as before (`collectProductValidationErrors()`'s local-path/folder-scoping check now only runs when `mediaAssetId` is absent).
+
+**Runtime resolution, not a frozen write-time snapshot:** `src/server/queries/catalog.ts`'s `resolveProductsMedia()` runs on every public product read (`getPublishedProducts()`, `getProductBySlug()`, `getProductById()`), batch-collects every `mediaAssetId` referenced across the product(s) being returned, and overrides each entry's `src` with the asset's **current** `media_assets.url` before the product ever reaches a page component. This is what makes a future "replace" meaningfully useful: replacing an asset's file updates **every product referencing it** with zero per-product edits — the whole reason Product.media didn't just freeze a URL forever the way `order_lines` intentionally does. `ProductHero`/`ProductCard`/`ProductMedia` needed **zero changes** — they still just receive `{ src, alt, ... }` the same as always.
+
+### Usage scanning — query-time, no `media_usage` table
+
+`findProductsReferencingMediaAsset()` in `queries/media.ts` uses Postgres's own JSONB containment operator (`products.media @> '[{"mediaAssetId": "..."}]'::jsonb`) rather than a separately-maintained tracking table — cheap, always accurate, and nothing to keep in sync at this business's realistic scale. Powers both the "Used by" list on `/admin/media/[id]` and `replaceMediaAssetAction`'s revalidation targeting. Only scans `products.media` — `site_settings`/`homepage_content` don't reference `media_assets` at all yet (see Website integration below).
+
+### Transactional audit logging
+
+`media.uploaded`, `media.updated` (alt/caption edits, and also what a "replace" logs — no separate `media.replaced` action), `media.archived` (only the transition *to* archived; unarchiving logs as a plain `media.updated`, matching the exact same "no separate unarchive action" convention Phase 14 established for its own draft/publish events). No `media.deleted` event exists, since hard delete isn't built. Every mutation independently calls `requireAdminUser()` as its first line and writes its audit event inside the same `db.transaction()` as the data change, exactly like every prior admin mutation in this codebase.
+
+### Live acceptance test — what was genuinely verified
+
+Using your own real upload (not seeded, not synthetic): uploaded a real image through `/admin/media` → saw its thumbnail in the grid → edited its alt text (hitting and then correcting a real duplicated-text glitch in your own editing, left untouched by me) → selected it via "Choose from Media Library" on the real Custom Graphic Design product → saved the product → confirmed the public `/store/custom-graphic-design` page rendered the Blob URL directly in its HTML → confirmed "Used by" on `/admin/media/[id]` correctly resolved back to that same product, verified against the actual usage-scan query, not just the UI. Along the way, the Server Action 1 MB body-size bug was found, root-caused, and fixed (see above) — confirmed to have left zero trace in either Neon or the Blob store before the fix shipped. Throughout: exactly one real `media_assets` row, exactly one real Blob object, the real product stayed `published` throughout, the real owner account attributed to every single audit event, and `customers`/`orders`/`order_lines` stayed at zero.
+
+### Not built this phase
+
+Video upload/processing/transcoding (the schema is video-ready — `type: "video"`, format-agnostic `mimeType`/`sizeBytes`/`storageProvider` — but no upload path or player exists). AI alt-text generation (alt text is admin-typed only, never invented). Website-content wiring — `site_settings`'s logos/OG image and `homepage_content`'s reserved hero image field do **not** reference `media_assets` yet; that remains planned, not built, exactly as Phase 14 already scoped it. A dedicated legacy-local-file "represent without uploading" registration UI (deferred — existing local media continues working purely through the untouched manual-path input, needing no Media Library involvement at all). Orphaned-previous-blob cleanup tooling (see Replace, above). Portfolio/Services admin, a brand color/font editor, an arbitrary file manager, client-facing uploads, Big Red Brain, Obsidian — none of this is touched, same boundary already established by every prior phase.
+
+### Future media expansion (documentation only)
+
+`media_assets` is shaped so later work extends cleanly, without a redesign: a video upload phase adds validation/a player/poster handling on top of the same table; website-content wiring (logos, hero image, OG image) would apply the exact same optional-`mediaAssetId`-plus-live-resolution pattern already proven on products; a real orphaned-blob cleanup job would read `storageKey`s no longer referenced by any current `media_assets.url` and reconcile against a Blob listing; Portfolio/Services media could eventually route through this same library instead of `public/images/projects|services/`. None of this is scheduled — it's recorded so a future phase doesn't have to re-derive the shape from scratch.
 
 ## Rules for creating new components
 

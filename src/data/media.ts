@@ -17,4 +17,13 @@ export type Media = {
   // Optional user-facing caption, distinct from `alt` (which is for
   // accessibility, not display).
   caption?: string;
+  // Phase 15 — optional link to a Media Library asset (media_assets.id).
+  // When present, src/server/queries/catalog.ts re-resolves `src` from the
+  // live media_assets row before this reaches a page, so replacing that
+  // asset's underlying file later updates every product referencing it
+  // with no per-product edit. `src` is still always populated (frozen at
+  // the moment the asset was chosen) so this type never breaks for a
+  // legacy entry that has no mediaAssetId at all — both shapes coexist
+  // indefinitely, see CLAUDE.md "Media Library".
+  mediaAssetId?: string;
 };
