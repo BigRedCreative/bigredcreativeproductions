@@ -14,11 +14,13 @@ import ProductOptionsEditor from "./ProductOptionsEditor";
 import ProductPackagesEditor from "./ProductPackagesEditor";
 import ProductAddOnsEditor from "./ProductAddOnsEditor";
 import ProductMediaEditor from "./ProductMediaEditor";
+import type { PickerMediaAsset } from "./ProductMediaEditor";
 
 type ProductFormProps = {
   action: (prevState: ProductFormState, formData: FormData) => Promise<ProductFormState>;
   initialProduct?: Product;
   services: Array<{ slug: string; title: string }>;
+  mediaAssets: PickerMediaAsset[];
   submitLabel: string;
 };
 
@@ -26,7 +28,7 @@ function dollarsValue(cents: number | undefined): string {
   return cents !== undefined ? String(cents / 100) : "";
 }
 
-export default function ProductForm({ action, initialProduct, services, submitLabel }: ProductFormProps) {
+export default function ProductForm({ action, initialProduct, services, mediaAssets, submitLabel }: ProductFormProps) {
   const [state, formAction, isPending] = useActionState<ProductFormState, FormData>(action, null);
 
   const [title, setTitle] = useState(initialProduct?.title ?? "");
@@ -295,7 +297,7 @@ export default function ProductForm({ action, initialProduct, services, submitLa
         <legend>
           <h2>Media</h2>
         </legend>
-        <ProductMediaEditor initialMedia={initialProduct?.media ?? []} slug={slug} />
+        <ProductMediaEditor initialMedia={initialProduct?.media ?? []} slug={slug} mediaAssets={mediaAssets} />
       </fieldset>
 
       <fieldset className="admin-form-section">

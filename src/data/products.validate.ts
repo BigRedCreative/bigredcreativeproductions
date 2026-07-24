@@ -162,7 +162,12 @@ export function collectProductValidationErrors(
         if (!media.src?.trim()) {
           errors.push(`${label}: ${field}.src is required`);
         } else {
-          checkMediaPath(media.src, `${field}.src`);
+          // A media-library-linked entry's src is a Blob URL, not a local
+          // path under the product's own folder — the local-path/prefix
+          // check only makes sense for the legacy manually-typed case.
+          if (!media.mediaAssetId) {
+            checkMediaPath(media.src, `${field}.src`);
+          }
           if (seenMediaSrc.has(media.src)) {
             errors.push(`${label}: duplicate media src "${media.src}"`);
           } else {

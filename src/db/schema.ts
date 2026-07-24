@@ -383,3 +383,57 @@ export const contactContent = pgTable("contact_content", {
   submitLabel: text("submit_label").notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+// ---------------------------------------------------------------------
+// Phase 15 — Media Library foundation. Metadata/reference only, no binary
+// data — the actual file bytes live in Vercel Blob; this table is purely
+// "what is it, where does it live, who uploaded it, is it still active."
+// See CLAUDE.md "Media Library" for the full architecture writeup.
+//
+// `id` follows the same "prod_" convention already established for
+// products: a stable string ("media_" + crypto.randomUUID()), never
+// derived from filename/storage key, never reused.
+//
+// `storageProvider` is included even though "vercel-blob" is the only
+// value written by anything in this phase — it exists so a future
+// provider swap, or a later "represent an existing local file without
+// uploading it" feature (explicitly deferred this phase), doesn't need a
+// schema change to add a second provider value.
+//
+// `filename` is display metadata only, NEVER the storage key and NEVER
+// interpolated into one — `storageKey` is always a fresh, server-generated
+// unique value (see src/server/mutate-media.ts once built). `alt` defaults
+// to empty string rather than being nullable, so "no alt written yet" is
+// one consistent falsy check everywhere, not a null-vs-empty distinction;
+// it's still required at the point an asset is actually attached to a
+// product/site field, enforced by that field's own validator, not here.
+// ---------------------------------------------------------------------
+export const MEDIA_ASSET_TYPES = ["image", "video"] as const;
+export type MediaAssetType = (typeof MEDIA_ASSET_TYPES)[number];
+
+export const MEDIA_ASSET_STATUSES = ["active", "archived"] as const;
+export type MediaAssetStatus = (typeof MEDIA_ASSET_STATUSES)[number];
+
+export const mediaAssets = pgTable("media_assets", {
+  id: text("id").primaryKey(),
+  storageProvider: text("storage_provider").notNull(),
+  storageKey: text("storage_key").notNull(),
+  url: text("url").notNull(),
+  type: text("type").notNull().$type<MediaAssetType>(),
+  mimeType: text("mime_type").notNull(),
+  filename: text("filename").notNull(),
+  originalFilename: text("original_filename").notNull(),
+  width: integer("width"),
+  height: integer("height"),
+  sizeBytes: integer("size_bytes").notNull(),
+  alt: text("alt").notNull().default(""),
+  caption: text("caption"),
+  status: text("status").notNull().$type<MediaAssetStatus>(),
+  createdByAdminUserId: uuid("created_by_admin_user_id").references(() => adminUsers.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const mediaAssetsRelations = relations(mediaAssets, ({ one }) => ({
+  createdByAdminUser: one(adminUsers, { fields: [mediaAssets.createdByAdminUserId], references: [adminUsers.id] }),
+}));

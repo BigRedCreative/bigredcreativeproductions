@@ -4,6 +4,7 @@ import { getDb } from "@/db";
 import { products } from "@/db/schema";
 import { PRODUCT_CATEGORIES, PRODUCT_STATUSES } from "@/data/products";
 import type { Product, ProductCategory, ProductStatus } from "@/data/products";
+import { getMediaAssetsByIds } from "@/server/queries/media";
 
 // The real, database-backed catalog — Neon is the sole authoritative
 // product source as of Phase 13 (see CLAUDE.md "Product admin +
@@ -40,6 +41,34 @@ function mapProductRow(row: typeof products.$inferSelect): Product {
   };
 }
 
+// Phase 15 — resolves any Product.media entry carrying a mediaAssetId
+// against the live media_assets table, overriding its frozen `src` with
+// the asset's current url. This is what lets replacing a media asset's
+// underlying file (see src/server/mutate-media.ts's replaceMediaAssetAction)
+// update every product referencing it with zero per-product edits. Legacy
+// entries with no mediaAssetId pass through completely unchanged. Batches
+// across every product/media item in one query rather than one lookup per
+// item, since this runs on every public product read.
+async function resolveProductsMedia(items: Product[]): Promise<Product[]> {
+  const mediaAssetIds = new Set<string>();
+  for (const product of items) {
+    for (const media of product.media) {
+      if (media.mediaAssetId) mediaAssetIds.add(media.mediaAssetId);
+    }
+  }
+  if (mediaAssetIds.size === 0) return items;
+
+  const assets = await getMediaAssetsByIds([...mediaAssetIds]);
+  return items.map((product) => ({
+    ...product,
+    media: product.media.map((media) => {
+      if (!media.mediaAssetId) return media;
+      const asset = assets.get(media.mediaAssetId);
+      return asset ? { ...media, src: asset.url } : media;
+    }),
+  }));
+}
+
 // ---------------------------------------------------------------------
 // Public reads — published products only. Mirrors the exact function
 // names/signatures the old array-backed src/data/products.ts exposed, so
@@ -50,7 +79,7 @@ function mapProductRow(row: typeof products.$inferSelect): Product {
 export async function getPublishedProducts(): Promise<Product[]> {
   const db = getDb();
   const rows = await db.select().from(products).where(eq(products.status, "published")).orderBy(desc(products.createdAt));
-  return rows.map(mapProductRow);
+  return resolveProductsMedia(rows.map(mapProductRow));
 }
 
 export async function getProductBySlug(slug: string): Promise<Product | undefined> {
@@ -58,7 +87,9 @@ export async function getProductBySlug(slug: string): Promise<Product | undefine
   const row = await db.query.products.findFirst({
     where: and(eq(products.slug, slug), eq(products.status, "published")),
   });
-  return row ? mapProductRow(row) : undefined;
+  if (!row) return undefined;
+  const [resolved] = await resolveProductsMedia([mapProductRow(row)]);
+  return resolved;
 }
 
 export async function getFeaturedProducts(): Promise<Product[]> {
@@ -78,7 +109,9 @@ export async function getProductsByServiceSlug(serviceSlug: string): Promise<Pro
 export async function getProductById(id: string): Promise<Product | undefined> {
   const db = getDb();
   const row = await db.query.products.findFirst({ where: eq(products.id, id) });
-  return row ? mapProductRow(row) : undefined;
+  if (!row) return undefined;
+  const [resolved] = await resolveProductsMedia([mapProductRow(row)]);
+  return resolved;
 }
 
 // ---------------------------------------------------------------------
