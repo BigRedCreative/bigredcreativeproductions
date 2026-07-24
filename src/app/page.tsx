@@ -9,22 +9,25 @@ import Studio from "@/components/Studio";
 import Process from "@/components/Process";
 import ContactForm from "@/components/ContactForm";
 import Footer from "@/components/Footer";
+import BrandTokens from "@/components/BrandTokens";
 import { isSectionEnabled } from "@/config/sections";
 
 export default function Home() {
   return (
-    <main>
-      {isSectionEnabled("header") && <Header />}
-      {isSectionEnabled("hero") && <Hero />}
-      {isSectionEnabled("ticker") && <Ticker />}
-      {isSectionEnabled("manifesto") && <Manifesto />}
-      {isSectionEnabled("services") && <Services />}
-      {isSectionEnabled("statement") && <Statement />}
-      {isSectionEnabled("portfolio") && <Portfolio />}
-      {isSectionEnabled("studio") && <Studio />}
-      {isSectionEnabled("process") && <Process />}
-      {isSectionEnabled("contact") && <ContactForm />}
-      {isSectionEnabled("footer") && <Footer />}
-    </main>
+    <BrandTokens>
+      <main>
+        {isSectionEnabled("header") && <Header />}
+        {isSectionEnabled("hero") && <Hero />}
+        {isSectionEnabled("ticker") && <Ticker />}
+        {isSectionEnabled("manifesto") && <Manifesto />}
+        {isSectionEnabled("services") && <Services />}
+        {isSectionEnabled("statement") && <Statement />}
+        {isSectionEnabled("portfolio") && <Portfolio />}
+        {isSectionEnabled("studio") && <Studio />}
+        {isSectionEnabled("process") && <Process />}
+        {isSectionEnabled("contact") && <ContactForm />}
+        {isSectionEnabled("footer") && <Footer />}
+      </main>
+    </BrandTokens>
   );
 }

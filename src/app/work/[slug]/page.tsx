@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import Header from "@/components/Header";
 import Footer from "@/components/Footer";
+import BrandTokens from "@/components/BrandTokens";
 import ProjectHero from "@/components/ProjectHero";
 import ProjectDetails from "@/components/ProjectDetails";
 import ProjectGallery from "@/components/ProjectGallery";
@@ -50,18 +51,20 @@ export default async function ProjectPage({ params }: ProjectPageProps) {
   const { previous, next } = getAdjacentProjects(slug);
 
   return (
-    <main>
-      <Header />
-      <ProjectHero project={project} />
-      <ProjectDetails project={project} />
-      {project.gallery && project.gallery.length > 0 && (
-        <ProjectGallery images={project.gallery} />
-      )}
-      {project.results && project.results.length > 0 && (
-        <ProjectResults results={project.results} />
-      )}
-      <ProjectNavigation previous={previous} next={next} />
-      <Footer />
-    </main>
+    <BrandTokens>
+      <main>
+        <Header />
+        <ProjectHero project={project} />
+        <ProjectDetails project={project} />
+        {project.gallery && project.gallery.length > 0 && (
+          <ProjectGallery images={project.gallery} />
+        )}
+        {project.results && project.results.length > 0 && (
+          <ProjectResults results={project.results} />
+        )}
+        <ProjectNavigation previous={previous} next={next} />
+        <Footer />
+      </main>
+    </BrandTokens>
   );
 }

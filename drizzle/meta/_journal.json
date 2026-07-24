@@ -50,6 +50,13 @@
       "when": 1784866032765,
       "tag": "0006_messy_rage",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1784872825665,
+      "tag": "0007_friendly_scarecrow",
+      "breakpoints": true
     }
   ]
 }

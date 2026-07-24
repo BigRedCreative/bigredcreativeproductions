@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import Header from "@/components/Header";
 import Footer from "@/components/Footer";
+import BrandTokens from "@/components/BrandTokens";
 import ServiceHero from "@/components/ServiceHero";
 import ServiceCapabilities from "@/components/ServiceCapabilities";
 import ServiceDeliverables from "@/components/ServiceDeliverables";
@@ -47,14 +48,16 @@ export default async function ServicePage({ params }: ServicePageProps) {
   }
 
   return (
-    <main>
-      <Header />
-      <ServiceHero service={service} />
-      <ServiceCapabilities service={service} />
-      <ServiceDeliverables service={service} />
-      <ServiceProcess service={service} />
-      <ServiceCTA service={service} />
-      <Footer />
-    </main>
+    <BrandTokens>
+      <main>
+        <Header />
+        <ServiceHero service={service} />
+        <ServiceCapabilities service={service} />
+        <ServiceDeliverables service={service} />
+        <ServiceProcess service={service} />
+        <ServiceCTA service={service} />
+        <Footer />
+      </main>
+    </BrandTokens>
   );
 }

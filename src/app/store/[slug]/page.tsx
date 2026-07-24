@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { notFound } from "next/navigation";
 import Header from "@/components/Header";
 import Footer from "@/components/Footer";
+import BrandTokens from "@/components/BrandTokens";
 import ProductHero from "@/components/ProductHero";
 import ProductMedia from "@/components/ProductMedia";
 import ProductDetails from "@/components/ProductDetails";
@@ -64,23 +65,25 @@ export default async function ProductPage({ params }: ProductPageProps) {
   const eligible = isCartEligible(product);
 
   return (
-    <main>
-      <Header />
-      <ProductHero product={product} />
-      {gallery.length > 0 && <ProductMedia media={gallery} />}
-      <ProductDetails product={product} />
-      <ProductPricing product={product} />
-      {eligible ? (
-        <ProductPurchasePanel product={product} />
-      ) : (
-        <>
-          {product.options && product.options.length > 0 && <ProductOptions product={product} />}
-          {product.packages && product.packages.length > 0 && <ProductPackages product={product} />}
-          {product.addOns && product.addOns.length > 0 && <ProductAddOns product={product} />}
-          <ProductCTA product={product} />
-        </>
-      )}
-      <Footer />
-    </main>
+    <BrandTokens>
+      <main>
+        <Header />
+        <ProductHero product={product} />
+        {gallery.length > 0 && <ProductMedia media={gallery} />}
+        <ProductDetails product={product} />
+        <ProductPricing product={product} />
+        {eligible ? (
+          <ProductPurchasePanel product={product} />
+        ) : (
+          <>
+            {product.options && product.options.length > 0 && <ProductOptions product={product} />}
+            {product.packages && product.packages.length > 0 && <ProductPackages product={product} />}
+            {product.addOns && product.addOns.length > 0 && <ProductAddOns product={product} />}
+            <ProductCTA product={product} />
+          </>
+        )}
+        <Footer />
+      </main>
+    </BrandTokens>
   );
 }

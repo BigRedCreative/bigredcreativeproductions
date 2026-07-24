@@ -437,3 +437,52 @@ export const mediaAssets = pgTable("media_assets", {
 export const mediaAssetsRelations = relations(mediaAssets, ({ one }) => ({
   createdByAdminUser: one(adminUsers, { fields: [mediaAssets.createdByAdminUserId], references: [adminUsers.id] }),
 }));
+
+// ---------------------------------------------------------------------
+// Phase 16 — Brand Controls. Exactly two rows, differentiated by
+// `status`, mirroring homepage_content's already-proven draft/published
+// pattern — never a version-history table, just "the one being edited"
+// and "the one that's live". Every color column is a validated, normalized
+// "#RRGGBB" string (never raw CSS, never a CSS function/keyword) — see
+// CLAUDE.md "Brand Controls" for the validation boundary and the public
+// <BrandTokens /> rendering mechanism that turns these into real CSS
+// custom properties at request time.
+//
+// Logo references live HERE, not on site_settings, specifically so a logo
+// choice participates in the same Save Draft -> Preview -> Publish
+// workflow as colors — the public site keeps rendering the PUBLISHED
+// row's logo (or, if null, site_settings' existing static path as
+// fallback) until an explicit publish, exactly like colors. This is a
+// deliberate divergence from Phase 14, where site_settings' logo path
+// fields stayed immediate/current; that immediate pair remains untouched
+// and is still what a brand-draft row with no media selection falls back
+// to — nothing here changes site_settings.logoHorizontalSrc/logoWhiteSrc
+// or how they're read today.
+// ---------------------------------------------------------------------
+export const BRAND_SETTINGS_STATUSES = ["draft", "published"] as const;
+export type BrandSettingsStatus = (typeof BRAND_SETTINGS_STATUSES)[number];
+
+export const brandSettings = pgTable("brand_settings", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  status: text("status").notNull().$type<BrandSettingsStatus>(),
+  primaryColor: text("primary_color").notNull(),
+  accentColor: text("accent_color").notNull(),
+  backgroundColor: text("background_color").notNull(),
+  surfaceColor: text("surface_color").notNull(),
+  textColor: text("text_color").notNull(),
+  mutedTextColor: text("muted_text_color").notNull(),
+  borderColor: text("border_color").notNull(),
+  buttonBackground: text("button_background").notNull(),
+  buttonText: text("button_text").notNull(),
+  buttonHoverBackground: text("button_hover_background").notNull(),
+  // Reserved/optional — nullable. When set, resolved against the live
+  // media_assets row at read time (same runtime-resolution principle
+  // Phase 15 established for Product.media), overriding the
+  // site_settings path fallback. When null, the public site falls back to
+  // site_settings.logoHorizontalSrc/logoWhiteSrc exactly as it does today.
+  logoHorizontalMediaAssetId: text("logo_horizontal_media_asset_id").references(() => mediaAssets.id, {
+    onDelete: "set null",
+  }),
+  logoWhiteMediaAssetId: text("logo_white_media_asset_id").references(() => mediaAssets.id, { onDelete: "set null" }),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
