@@ -18,7 +18,7 @@ export default function ProductHero({ product }: ProductHeroProps) {
         <p className="project-hero-summary">{product.summary}</p>
         <p className="product-hero-price">{formatPricingSummary(product.pricing)}</p>
       </div>
-      <div className="project-hero-media project-dark">
+      <div className="product-hero-media">
         {primaryMedia ? (
           <>
             <Image

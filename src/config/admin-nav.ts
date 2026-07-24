@@ -11,7 +11,7 @@ export const adminNavItems: AdminNavItem[] = [
   { label: "Dashboard", href: "/admin", available: true },
   { label: "Orders", href: "/admin/orders", available: true },
   { label: "Customers", href: "/admin/customers", available: true },
-  { label: "Products", available: false },
+  { label: "Products", href: "/admin/products", available: true },
   { label: "Services", available: false },
   { label: "Portfolio", available: false },
   { label: "Media", available: false },

@@ -11,25 +11,33 @@ import ProductPackages from "@/components/ProductPackages";
 import ProductAddOns from "@/components/ProductAddOns";
 import ProductCTA from "@/components/ProductCTA";
 import ProductPurchasePanel from "@/components/ProductPurchasePanel";
-import { getPublishedProducts, getProductBySlug } from "@/data/products";
+import { getPublishedProducts, getProductBySlug } from "@/server/queries/catalog";
 import { isCartEligible } from "@/data/cart";
 
-// Only the slugs returned by generateStaticParams are valid — anything else
-// 404s instead of attempting an on-demand render. Draft and archived
-// products are excluded here, so their slugs never generate a public route.
-export const dynamicParams = false;
+// Published slugs known at build time are pre-rendered; anything else
+// (a product published since the last build) renders on demand instead of
+// 404ing — publishing through admin must not require a redeploy. See
+// CLAUDE.md "Product admin + database-backed catalog".
+export const dynamicParams = true;
+
+// Time-based fallback only — the real freshness mechanism is
+// revalidatePath() called directly from every admin product mutation (see
+// src/server/mutate-product.ts). This just guards against a missed
+// revalidation call.
+export const revalidate = 3600;
 
 type ProductPageProps = {
   params: Promise<{ slug: string }>;
 };
 
-export function generateStaticParams() {
-  return getPublishedProducts().map((product) => ({ slug: product.slug }));
+export async function generateStaticParams() {
+  const products = await getPublishedProducts();
+  return products.map((product) => ({ slug: product.slug }));
 }
 
 export async function generateMetadata({ params }: ProductPageProps): Promise<Metadata> {
   const { slug } = await params;
-  const product = getProductBySlug(slug);
+  const product = await getProductBySlug(slug);
   if (!product) {
     return {};
   }
@@ -46,7 +54,7 @@ export async function generateMetadata({ params }: ProductPageProps): Promise<Me
 
 export default async function ProductPage({ params }: ProductPageProps) {
   const { slug } = await params;
-  const product = getProductBySlug(slug);
+  const product = await getProductBySlug(slug);
 
   if (!product) {
     notFound();

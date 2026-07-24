@@ -5,20 +5,11 @@ import { customers, orderLines, orders } from "@/db/schema";
 import { buildOrderDraft } from "@/data/orders";
 import type { OrderCustomer } from "@/data/orders";
 import type { CartItem } from "@/data/cart";
+import { isUniqueViolation } from "@/server/is-unique-violation";
 
 export type CreateOrderResult =
   | { ok: true; id: string; orderNumber: string; status: string }
   | { ok: false; error: string };
-
-function isUniqueViolation(error: unknown, constraint: string): boolean {
-  // Postgres SQLSTATE 23505 = unique_violation. Constraint name is checked
-  // too so this only matches the specific constraint we're guarding
-  // against, not any unrelated unique violation.
-  if (!error || typeof error !== "object") return false;
-  const candidate = error as { code?: string; constraint?: string; message?: string };
-  if (candidate.code !== "23505") return false;
-  return candidate.constraint === constraint || (candidate.message?.includes(constraint) ?? false);
-}
 
 // The single place Customer + Order + OrderLine rows are created. Runs as
 // one atomic transaction — a partial order (e.g. order row created but a
