@@ -27,12 +27,18 @@ src/
     checkout/page.tsx      — the /checkout route (see "Checkout + Order foundation")
     api/orders/route.ts     — POST /api/orders Route Handler, verifies against Neon — see "Product admin + database-backed catalog"
     api/auth/[...nextauth]/route.ts — Auth.js's own GET/POST handlers, re-exported from src/auth.ts
-    admin/               — the protected admin system, see "Admin foundation" and "Product admin + database-backed catalog" below
+    admin/               — the protected admin system, see "Admin foundation", "Product admin + database-backed
+                          catalog", and "Website content admin" below
 
   components/
     Header.tsx, Hero.tsx, Ticker.tsx, Manifesto.tsx, Statement.tsx,
     Services.tsx, Portfolio.tsx, Studio.tsx, Process.tsx, ContactForm.tsx, Footer.tsx
-      — one component per homepage section; presentation + structure only
+      — one component per homepage section; presentation + structure only. As of Phase 14,
+        Header/Footer/Hero/ContactForm are async server components reading their content from
+        Neon (site_settings/navigation_items/homepage_content/contact_content, via
+        src/server/queries/site-content.ts) instead of importing static data/config constants
+        directly — see "Website content admin". Hero.tsx accepts an optional `content` override
+        prop, reused by the admin draft preview, the same pattern ProductHero already established.
     ProjectHero.tsx, ProjectDetails.tsx, ProjectGallery.tsx, ProjectResults.tsx, ProjectNavigation.tsx
       — sections used only on /work/[slug] project detail pages
     ServiceHero.tsx, ServiceCapabilities.tsx, ServiceDeliverables.tsx, ServiceProcess.tsx, ServiceCTA.tsx
@@ -70,16 +76,31 @@ src/
     ProductOptionsEditor.tsx, ProductPackagesEditor.tsx, ProductAddOnsEditor.tsx, ProductMediaEditor.tsx
       — repeatable array-field sub-editors used inside ProductForm, each serializing its
         local state into one hidden JSON form field on submit
+    SiteSettingsForm.tsx, NavigationForm.tsx, ContactContentForm.tsx, HeroContentForm.tsx, PublishHeroButton.tsx,
+    SocialLinksEditor.tsx
+      — Phase 14 website-content forms, see "Website content admin". SiteSettingsForm is shared by
+        both the General/Branding and SEO pages (one underlying site_settings row, two field
+        subsets — see that section for why). NavigationForm/SocialLinksEditor are repeatable-list
+        editors following the exact same add/remove/serialize-to-hidden-field pattern as
+        ProductOptionsEditor. HeroContentForm edits the DRAFT homepage_content row only;
+        PublishHeroButton is a separate, fieldless action that copies draft → published.
 
   data/
-    homepage.ts    — all homepage copy (hero, ticker, manifesto, statement, studio,
-                       process, contact form labels, footer wording)
+    homepage.ts    — homepage copy (hero, ticker, manifesto, statement, studio, process, contact
+                       form labels, footer wording). As of Phase 14, the `hero` and `contact`
+                       exports are the FALLBACK for homepage_content/contact_content, not the
+                       live source — see "Website content admin". ticker/manifesto/statement/
+                       studio/process/footer.backToTopLabel are still the live, direct source
+                       (not migrated to the database this phase).
     services.ts      — the services list (title/description/tags)
     services.validate.ts — runtime validation for service data, run automatically on import
     projects.ts        — the full portfolio data model + helpers (see "Portfolio system" below)
     projects.validate.ts — runtime validation for project data, run automatically on import
     project.template.ts    — copy-paste starter template for a new project (not used by the app)
     media.ts         — shared Media type (image/video) for the catalog system
+    media-path.ts       — isLocalMediaPath(): the local-vs-external-URL check, extracted in Phase 14 out
+                          of products.validate.ts so website-content validation reuses the exact same
+                          rule instead of a second copy
     products.ts        — Product TYPES, constants, and pure helpers only (id/slug helpers, slugify()).
                           No product data and no query functions live here as of Phase 13 — see
                           "Product admin + database-backed catalog" for why, and src/server/queries/catalog.ts
@@ -95,18 +116,22 @@ src/
                           the mailto order-request builders — see "Checkout + Order foundation"
     orders.validate.ts     — RUNTIME validateOrderDraft() (returns errors, does not throw —
                           different in kind from the build-time *.validate.ts files above)
-    navigation.ts        — header nav links + CTA (hrefs derived from config/sections.ts and products.ts).
-                          The live Cart (N) indicator is NOT in this file — see "Cart navigation"
+    navigation.ts        — the FALLBACK for navigation_items as of Phase 14 (was the live source through
+                          Phase 13) — hrefs derived from config/sections.ts and products.ts. The live
+                          Cart (N) indicator is NOT in this file — see "Cart navigation"
 
   config/
-    site.ts     — business identity: name, legal name, url, email, location, social links
+    site.ts     — business identity: name, legal name, url, email, location, social links.
+                  As of Phase 14, this is the FALLBACK for site_settings, not the live source
+                  — see "Website content admin"
     theme.ts      — TypeScript mirror of the CSS design tokens in globals.css
     sections.ts     — homepage section order, anchor IDs, enabled/disabled flags
 
   db/
     schema.ts   — Drizzle table/sequence definitions (admin_users, audit_log, products, customers,
-                   orders, order_lines, order_number_seq) — see "Backend + database foundation" and
-                   "Product admin + database-backed catalog"
+                   orders, order_lines, order_number_seq, site_settings, navigation_items,
+                   homepage_content, contact_content) — see "Backend + database foundation",
+                   "Product admin + database-backed catalog", and "Website content admin"
     index.ts      — getDb(): lazy, server-only Neon/Drizzle client, throws only when actually called
 
   server/
@@ -123,11 +148,25 @@ src/
                           is written; each independently calls requireAdminUser(), writes a transactional
                           audit_log entry, and revalidates the affected storefront routes
     audit-log.ts           — recordAuditEvent(): the one place any admin write records who/what/when
+    validate-website-content.ts — Phase 14's shared href/email/canonical-URL/media-path validators, reused
+                          across every website-content mutation — see "Website content admin"
+    build-website-content-form.ts — parses admin website-content FormData (site settings, navigation,
+                          contact, hero) into candidate shapes; shape parsing only, mirrors
+                          build-product-form.ts's split from business validation
+    mutate-website-content.ts — updateSiteSettingsAction()/updateNavigationAction()/
+                          updateContactContentAction()/saveHeroDraftAction()/publishHeroAction(): the
+                          only place site_settings/navigation_items/homepage_content/contact_content
+                          rows are written — see "Website content admin"
     queries/orders.ts        — server-only, read-only admin order queries (list/detail/status counts)
     queries/customers.ts       — server-only, read-only admin customer queries (list/detail/count)
     queries/catalog.ts        — server-only, database-backed product reads: getPublishedProducts(),
                           getProductBySlug(), getProductById(), listProducts() (admin), etc. — the
                           ONE place anything in the app reads a Product from Neon
+    queries/site-content.ts     — server-only, database-backed website-content reads: getSiteSettings(),
+                          getNavigation(), getPublishedHeroContent(), getContactContent(), plus
+                          admin-only raw-row variants — the ONE place anything in the app reads
+                          Phase 14 website content from Neon; every public read is field-level-
+                          fallback-safe against the matching src/config or src/data constant
 
   auth.ts                — Auth.js v5 config (Google OAuth, JWT sessions, no adapter tables)
   proxy.ts                — Next.js 16's proxy convention (not middleware.ts) — admin fast-path redirect only
@@ -138,17 +177,20 @@ CLI-only files — see "Backend + database foundation" → "Database migrations"
 
 ## Where to edit things
 
-- **Homepage text** (headlines, taglines, body copy, button labels, contact form labels) → `src/data/homepage.ts`
+- **Homepage hero content** (badges, headline, tagline, supporting copy, button) — edited through **Admin → Website → Homepage** (`/admin/website/homepage`, draft/preview/publish), never by editing source code — see "Website content admin". `src/data/homepage.ts`'s `hero` export is now the fallback only.
+- **Site name, legal name, footer tagline, contact email/phone, location, logos, social links** — edited through **Admin → Website → General & Branding** (`/admin/website/general`) — see "Website content admin". `src/config/site.ts` is now the fallback only.
+- **Nav links / header CTA** — edited through **Admin → Website → Navigation** (`/admin/website/navigation`) — see "Website content admin". `src/data/navigation.ts` is now the fallback only.
+- **Contact section copy** (kicker, heading, description, submit button label) — edited through **Admin → Website → Contact** (`/admin/website/contact`) — see "Website content admin". The form's own field labels/placeholders/service options are still code-owned in `src/data/homepage.ts`.
+- **SEO/meta title, meta description, canonical URL, social share description** — edited through **Admin → Website → SEO & Sharing** (`/admin/website/seo`) — see "Website content admin".
+- **Other homepage text** (ticker, manifesto, statement, studio, process copy) → still `src/data/homepage.ts` directly — not migrated to the database this phase.
 - **Services list** → `src/data/services.ts`
 - **Portfolio projects** → `src/data/projects.ts`
 - **Catalog products** — created/edited/published/archived through **Admin → Products → New Product** (`/admin/products`), never by editing source code — see "Product admin + database-backed catalog"
 - **Store index page copy** (heading, intro, empty state) → `src/data/store.ts`
-- **Nav links / header CTA** → `src/data/navigation.ts`
-- **Business info** (name, email, location, social links) → `src/config/site.ts`
 - **Colors, spacing, shadows, borders, durations** → `src/app/globals.css` `:root` custom properties (mirrored for reference in `src/config/theme.ts`, but globals.css is the source of truth the browser actually uses)
 - **Section order / anchor IDs / enabling-disabling a section** → `src/config/sections.ts`, then keep `src/app/page.tsx`'s JSX order in sync
 
-Most content edits should only ever touch `src/data/*.ts` or `src/config/*.ts` — not the component files.
+Most remaining content edits should only touch `src/data/*.ts` or `src/config/*.ts` — not the component files. Business identity, navigation, homepage hero, and contact-section copy have moved to the database as of Phase 14; the matching `src/data`/`src/config` files remain only as the offline fallback.
 
 ## Portfolio system
 
@@ -856,11 +898,23 @@ Next.js 16 **renamed** the `middleware.ts` file convention to `proxy.ts` (export
 /admin/orders/[id]          — order detail (protected)
 /admin/customers            — customers list (protected)
 /admin/customers/[id]         — customer detail (protected)
+/admin/products             — products list (protected) — see "Product admin + database-backed catalog"
+/admin/products/new           — create product (protected)
+/admin/products/[id]           — product detail (protected)
+/admin/products/[id]/edit        — edit product (protected)
+/admin/products/[id]/preview       — admin-authenticated draft preview (protected)
+/admin/website              — website content hub (protected) — see "Website content admin"
+/admin/website/general         — General & Branding (protected)
+/admin/website/homepage        — Homepage hero draft editor (protected)
+/admin/website/homepage/preview    — admin-authenticated draft preview (protected)
+/admin/website/navigation        — header navigation editor (protected)
+/admin/website/contact         — contact section editor (protected)
+/admin/website/seo            — SEO & sharing (protected)
 ```
 
 Route-group structure: `src/app/admin/layout.tsx` (top-level — imports the admin stylesheet, sets `robots: { index: false, follow: false }`, does **no** auth check) wraps everything, including `login/` and `access-denied/`, which sit as siblings outside the `(protected)` route group. `src/app/admin/(protected)/layout.tsx` is what actually calls `requireAdminUser()` and renders the sidebar/header shell — only routes inside that group are protected. Route groups (`(protected)`) don't appear in the URL, so `/admin/(protected)/orders/page.tsx` serves `/admin/orders` exactly as shown above.
 
-**Reserved, not built:** `/admin/products`, `/admin/services`, `/admin/portfolio`, `/admin/media`, `/admin/website`, `/admin/settings`, `/admin/brain` — listed in `src/config/admin-nav.ts`'s `adminNavItems` with `available: false`, rendered in the sidebar as plain disabled text with a "Coming later" badge, **never a real `<a>`/`<Link>`, never a working href.** Add a route here only when it actually exists.
+**Reserved, not built:** `/admin/services`, `/admin/portfolio`, `/admin/media`, `/admin/settings`, `/admin/brain` — listed in `src/config/admin-nav.ts`'s `adminNavItems` with `available: false`, rendered in the sidebar as plain disabled text with a "Coming later" badge, **never a real `<a>`/`<Link>`, never a working href.** Add a route here only when it actually exists. `/admin/products` (Phase 13) and `/admin/website` (Phase 14) are both `available: true` now.
 
 **No public navigation ever links to `/admin`** — reachable only by its direct URL, and excluded from search indexing via the layout's `robots` metadata.
 
@@ -1037,6 +1091,108 @@ Verified against the real product's actual artwork (1600×1200, 4:3) end to end:
 Using one real, admin-created product (not seeded, not synthetic) start to finish: created via `/admin/products/new` → appeared in `/admin/products` → did **not** appear publicly while draft → previewed correctly while authenticated → edited (title, slug, productType, media) → the status/productType bug found and fixed as above → media path mismatch found and corrected (byte-identical duplicate removed) → published → appeared on `/store` and `/store/custom-graphic-design` (`200`, statically generated) with no redeploy → card and hero both render the complete, uncropped artwork → `POST /api/orders` resolves the same product from Neon → exactly one product row throughout → six real, correctly-attributed audit events (`created`, four `updated`, `published`) → zero customer/order/order_line rows created merely by any of this → the real owner's `admin_users` row untouched throughout.
 
 **Not built/planned for later:** bulk product actions, product duplication, a "quick publish" one-click control separate from the edit form, and — as already covered above — the Media Library/upload system.
+
+## Website content admin
+
+**Status: a real admin-controlled system for the routine website content most likely to change often — business identity/branding, homepage hero, header navigation, contact-section copy, and SEO/sharing metadata — backed by Neon, with the existing TypeScript config/data files retained as an offline fallback, never deleted.** This is the phase that executes the "content administration, not a redesign" plan: the homepage looks and behaves exactly as it did before, but its content now lives in the database and is editable through `/admin/website`.
+
+### Four small, typed tables — not one JSON blob
+
+`src/db/schema.ts`, added via `drizzle/0005_hot_echo.sql` (one migration for all four — they're a single coherent, purely-additive feature; see that migration's own inline commentary for why it wasn't split like Phase 13's FK-restore/audit-log pair):
+
+- **`site_settings`** — a singleton row (`id = 'default'`, the app never creates a second one). Backs the admin UI's General/Branding **and** SEO groupings from one table — the admin UI's section layout is a presentation choice, not a database structure. Typed columns for everything except `socialLinks`, a small bounded JSONB array (`{ platform, url }[]`), mirroring the same "JSONB only for genuinely variable-length lists" rule already used for `Product.media`/`options`/`packages`. Includes two reserved, currently-unrendered columns: `contactPhone` (no phone field existed anywhere before Phase 14) and `ogImageSrc` (no `openGraph.images` wiring exists in `layout.tsx` yet).
+- **`navigation_items`** — genuinely multi-row, fully scalar. One table covers both the header's primary menu (`placement: 'primary'`, ordered by `sortOrder`) and the single header button (`placement: 'header_cta'`), rather than two near-identical tables.
+- **`homepage_content`** — exactly two rows, differentiated by `status: 'draft' | 'published'`, never more. This is the **one** Phase 14 table with a draft/publish split — see "Draft/publish model" below for why only this one. Four columns (`heroImageSrc`, `heroImageAlt`, `secondaryCtaLabel`, `secondaryCtaHref`) are reserved: the columns exist so a future phase doesn't need a migration to add them, but `Hero.tsx` renders neither an image nor a second CTA this phase — approved explicitly as "content administration, not a homepage redesign." `badgePrimary`/`badgeSecondary` (the two rotated sticker badges) are included as full editable fields even though they weren't in the original request list, since they're real content `Hero.tsx` renders unconditionally today.
+- **`contact_content`** — a singleton row (same `id = 'default'` convention), scoped to exactly the four fields `ContactForm.tsx` renders as section copy (`kicker`, `heading`, `description`, `submitLabel`). The form's own field labels/placeholders/service dropdown options stay code-owned in `src/data/homepage.ts` — narrower scope than "every string in the component," matching "content likely to change often" rather than form microcopy.
+
+No table has a foreign key to any other table (including `admin_users`) — "who edited what, when" is already fully covered by `audit_log`'s own `admin_user_id`, so nothing here duplicates it.
+
+### Content fallback — the core safety principle
+
+`src/config/site.ts`, `src/data/homepage.ts`'s `hero`/`contact` exports, and `src/data/navigation.ts` are **retained, unmodified, and undeleted** — Phase 14 does not touch or remove them, unlike `product.template.ts` in Phase 13 (which was only deleted after the admin flow was fully proven). They are now the **fallback**, read by `src/server/queries/site-content.ts`.
+
+Every public read in that module merges the DB row against its matching TS constant **field by field** — `row.siteName || fallback.siteName`, not "if the row is missing, fall back entirely." A partially-populated row can never blank out unrelated content on the public site. Admin reads (used to prefill edit forms) deliberately skip this merge and return true, raw DB state instead — an editor needs to see what's actually stored, not a code-blended approximation.
+
+The Phase 14 migration's seed `INSERT`s copied every value **verbatim** from the live TypeScript files at the moment of migration, so the first database-backed render was byte-identical to what was live immediately before cutover — verified directly against Neon before any admin edit was made.
+
+### Public components now read from Neon
+
+`Header.tsx`, `Footer.tsx`, `Hero.tsx`, and `ContactForm.tsx` are now `async` server components calling `getSiteSettings()`/`getNavigation()`/`getPublishedHeroContent()`/`getContactContent()` instead of importing `siteConfig`/`hero`/`navigation.ts`/`contact` directly. `layout.tsx`'s `export const metadata` (a static object) became `export async function generateMetadata()` reading `getSiteSettings()` — the change required for a DB-backed site name/meta title/description/canonical URL to take effect without a redeploy. Every one of these query functions is wrapped in React's `cache()`, so the several components that each need the same row within one request (e.g. `Header` + `Footer` + `generateMetadata` all need `site_settings`) share a single DB round trip per request instead of querying it redundantly per component.
+
+`hero.cta.icon`/`hero.cta.ariaLabel` in `src/data/homepage.ts` remain code-owned, static, presentational/accessibility details — not part of the admin-editable content set, not requested, not moved to the database.
+
+### Draft/publish model — one table gets it, three don't
+
+- **`homepage_content`**: draft + published rows. This is the one piece of website content where "preview before it goes live" has real value — it's the first thing every visitor sees. `/admin/website/homepage` edits the **draft** row only (`saveHeroDraftAction`) and never touches the public site on save. `/admin/website/homepage/preview` renders the **exact same public `Hero` component** the homepage uses, passed the draft row's content via `Hero`'s optional `content` override prop — the same "reuse the real component, don't reconstruct it" principle Phase 13 established for product preview. Publishing (`publishHeroAction`) takes **no form fields of its own** — it reads whatever is currently saved in the draft row and copies it onto the published row inside one transaction, writes the audit event, and revalidates `/`. This is a deliberate three-step flow (Save Draft → Preview → Publish); clicking Publish without saving first publishes the last-saved draft, not unsaved form edits — the UI's help text says so.
+- **`site_settings`, `navigation_items`, `contact_content`**: immediate/current, no draft state, save takes effect right away with immediate revalidation. These are corrective/mechanical settings (a typo'd email, a broken nav link, a stale contact heading) where instant-fix value outweighs staging value, and none carries the same first-impression risk as the hero.
+
+### Admin routes and forms
+
+```
+/admin/website              — hub linking to the five sections below
+/admin/website/general         — site name, legal name, tagline, contact email/phone, location, logos, social links
+/admin/website/homepage        — hero draft editor + "Publish current draft"
+/admin/website/homepage/preview    — admin-authenticated draft preview (reuses the real Hero component)
+/admin/website/navigation        — header menu items (add/remove/reorder/enable) + header button
+/admin/website/contact         — contact-section kicker/heading/description/submit label
+/admin/website/seo            — meta title/description, canonical URL, social sharing description/image
+```
+
+All inside the existing `(protected)` route group — `requireAdminUser()` coverage via the layout is automatic for every page above. `src/config/admin-nav.ts`'s "Website" entry is now `available: true`. None of the admin UI ever says "site_settings," "navigation_items," or any other table name — section labels match the plain-language groupings above.
+
+`SiteSettingsForm.tsx` is **shared** by the General/Branding and SEO pages, since both edit the same `site_settings` row: each page shows only its own fields visibly and carries the *other* section's current values forward as hidden inputs, so every submission always sends the complete settings shape — avoiding a partial-update codepath entirely, the same principle as `ProductForm` always submitting a complete candidate even though it's organized into fieldset sections. `NavigationForm.tsx`/`SocialLinksEditor.tsx` are repeatable-list editors following the **exact** add/remove/serialize-to-one-hidden-JSON-field pattern `ProductOptionsEditor.tsx` already established; reordering nav items is plain up/down buttons (array order becomes `sortOrder` on save), not drag-and-drop — proportionate to "a handful of menu items," not a general page-builder.
+
+### Query/mutation split
+
+Mirrors the read/write separation already established for products/orders/customers:
+
+- **Reads:** `src/server/queries/site-content.ts` — `server-only`, zero `insert`/`update`/`delete` calls, never imported by a client component.
+- **Form parsing:** `src/server/build-website-content-form.ts` — the untrusted-`FormData`-to-candidate-shape boundary, shape parsing only (mirrors `build-product-form.ts`'s split from business validation).
+- **Validation:** `src/server/validate-website-content.ts` — small, composable validators (`validateRequiredText`, `validateEmailShape`, `validateHref`, `validateAbsoluteHttpsUrl`, `validateRequiredLocalMediaPath`/`validateOptionalLocalMediaPath`) reused across every mutation, same "collect everything, return inline, never partial-write" philosophy as `collectProductValidationErrors()`. `validateHref`/`validateAbsoluteHttpsUrl` are the actual security boundary for every admin-editable URL — see Security below.
+- **Writes:** `src/server/mutate-website-content.ts` — `"use server"`, the only place any of the four tables is written. `updateSiteSettingsAction()`, `updateNavigationAction()`, `updateContactContentAction()`, `saveHeroDraftAction()`, and `publishHeroAction()` **each independently call `requireAdminUser()`** as their first line, exactly like `mutate-product.ts` — Server Actions aren't covered by the protected layout's own check. Each write is wrapped in a `db.transaction()` alongside its `recordAuditEvent(tx, ...)` call, so a content change and its audit entry can never drift apart.
+
+### Audit events
+
+`website.settings.updated`, `website.navigation.updated`, `website.contact.updated`, `website.hero.draft_saved`, `website.hero.published` — metadata stays small (e.g. `{ siteName, metaTitle }`, `{ itemCount }`, `{ headlineLead }`), never a full content dump, matching the exact rule already established for `product.*` events.
+
+### Revalidation — and the Header/Footer duplication this phase inherits
+
+- **`homepage_content` publish** → `revalidatePath("/")` only (the hero renders only on the homepage).
+- **`site_settings` save** → `revalidatePath("/", "layout")`, since `generateMetadata()` now reads it and the root layout wraps every route.
+- **`contact_content` save** → `revalidatePath("/")` (the contact section renders only on the homepage).
+- **`navigation_items` save** → immediate `revalidatePath()` for a fixed, known list of major routes (`/`, `/store`, `/cart`, `/checkout`); the dynamic detail routes (`/store/[slug]`, `/work/[slug]`, `/services/[slug]`) are **not** individually revalidated on nav save — they pick up the change via their existing `revalidate = 3600` ISR fallback instead.
+
+**Why the gap exists, and why it wasn't closed this phase:** `Header`/`Footer` are not rendered from a shared root layout — `src/app/layout.tsx` only wraps `{children}` in `CartProvider`. Every top-level page (`page.tsx`, `store/page.tsx`, `store/[slug]/page.tsx`, `work/[slug]/page.tsx`, `services/[slug]/page.tsx`, `cart/page.tsx`, `checkout/page.tsx`) imports and renders `Header`/`Footer` itself. This predates Phase 14 — it's inherited technical debt, not something this phase introduced. Moving `Header`/`Footer` into the root layout would let one `revalidatePath("/", "layout")` reach every route instantly, but that's a structural change touching every route's render tree, and was explicitly deferred rather than bundled into a content-admin phase. **Documented here as a candidate future cleanup, not a bug.**
+
+### Security
+
+- **Every href a website-content mutation can write** (`navigation_items.href`, `homepage_content.ctaHref`, social link URLs) is validated server-side by `validateHref()`/`validateAbsoluteHttpsUrl()` before any write: a relative path, a same-page `#hash`, a `mailto:` with a shape-checked address, or an absolute `https://` URL only. **Rejected outright:** `javascript:`, `data:`, `vbscript:`, any other non-https scheme, bare `http://`, and protocol-relative `//host` URLs. This is the actual security boundary — `Button.tsx`/`Header.tsx` render every href directly with zero runtime sanitization, exactly like every other href in this codebase, so safety comes entirely from what's allowed to be written, not from escaping at render time.
+- `site_settings.canonicalUrl` is validated even more strictly (`validateAbsoluteHttpsUrl`) since it feeds `new URL(...)` as `metadataBase` — invalid input must never reach the database, since it would otherwise throw at request time.
+- Email fields use the same lightweight shape check (`EMAIL_PATTERN`) already used by `validateOrderDraft()` — no new library.
+- Logo/media path fields reuse `isLocalMediaPath()` (now extracted into `src/data/media-path.ts` so both `products.validate.ts` and `validate-website-content.ts` share one implementation instead of two copies).
+- **No admin-editable website-content field is ever rendered via `dangerouslySetInnerHTML`** — none of `Header`/`Footer`/`Hero`/`ContactForm` use it, and Phase 14 introduces none. Every field is plain text, rendered through normal JSX interpolation, which is escaped by React by default. This is a standing rule for any future admin-content form, not just this phase's fields.
+- Every mutation independently calls `requireAdminUser()`, per the rule established in "Admin foundation."
+
+### Media — path/reference model, no upload
+
+Same principle as Phase 13's product media: **path/reference editing only, no file upload.** `site_settings.logoHorizontalSrc`/`logoWhiteSrc` are plain text inputs in the General & Branding form — the admin places the real file under `public/brand/` first (the same folder the two seeded logos already live in), then types the path in. `site_settings.ogImageSrc` (reserved, unrendered) and `homepage_content.heroImageSrc` (reserved, unrendered) follow the same convention for whenever a future phase wires up their rendering. Validation reuses `isLocalMediaPath()` — now extracted into `src/data/media-path.ts` specifically so this phase's validator and `products.validate.ts` share one implementation instead of maintaining two copies of the same local-path rule. **A real Media Library/upload system remains a planned, separate future phase** — not a placeholder gap being papered over here, the same explicitly-agreed boundary Phase 13 already drew for product media.
+
+### Live acceptance test — what was genuinely verified
+
+Using your own real edit through `/admin/website` (not seeded, not synthetic): the homepage hero's `eyebrow` was changed to **"BRANDING • DESIGN • PRODUCTION"** via `/admin/website/homepage` → Save Draft → confirmed private (public homepage still showed the old eyebrow, draft row held the new text) → confirmed correct via `/admin/website/homepage/preview` (the real `Hero` component, rendering the draft) → Publish → the public homepage updated to the new eyebrow **with no source edit, no commit, and no redeploy** — the running dev server picked it up purely because `Hero.tsx` reads `getPublishedHeroContent()` from Neon on every request. Exactly one `website.hero.draft_saved` and one `website.hero.published` audit event were recorded, both correctly attributed to the real owner account, with small, safe metadata. A separate, real General/Branding or SEO save in the same session produced two legitimate `website.settings.updated` events, also correctly attributed — confirming the shared `SiteSettingsForm.tsx`/`updateSiteSettingsAction()` path works end to end, not just the hero path. Throughout: the real `Custom Graphic Design` product stayed untouched and published, the real owner `admin_users` row stayed untouched, and `customers`/`orders`/`order_lines` stayed at zero. This is the same "prove it against real usage, not just a regression harness" standard Phase 13's acceptance test set.
+
+### Not built this phase
+
+Dynamic favicon management (the existing static Next.js `favicon.ico` file-convention is untouched — making it DB-driven would require a dynamic `icon.tsx` route re-reading the database on every request, a real architecture change deferred as explicitly out of scope). Hero image/secondary CTA rendering (columns exist, reserved, unrendered). A shared root layout for `Header`/`Footer` (see Revalidation above). Portfolio/services editors, a Media Library/upload system, Stripe, AI, Obsidian, or a general page-builder — none of this is touched, same boundary already established by Phase 13.
+
+### Future admin expansion (documentation only)
+
+`site_settings`, `navigation_items`, `homepage_content`, and `contact_content` are shaped so a future phase can extend this same admin, without a redesign:
+
+- **Media Library** — once a real upload/asset-management system exists, every path field this phase built as plain text (`logoHorizontalSrc`, `logoWhiteSrc`, `ogImageSrc`, `heroImageSrc`) becomes a picker over that library instead of a typed path — the underlying columns don't change shape, only how the admin fills them in.
+- **Brand controls (colors, fonts, buttons)** — `src/app/globals.css`'s `:root` design tokens (documented under "Colors, spacing, shadows, borders, durations" above) remain code-only this phase. A future "Branding" expansion could move a curated subset (primary/accent colors, button styles) into `site_settings` or a dedicated table the same way logos moved here — deliberately not started this phase, since it risks the site's established visual identity if exposed to unrestricted admin editing without real guardrails.
+- **Services Admin / Portfolio Admin** — `services.ts`/`projects.ts` remain fully code-owned, exactly as Phase 13 already documented as out of scope. This phase's query/mutation/validation/audit pattern (`queries/site-content.ts`, `build-website-content-form.ts`, `validate-website-content.ts`, `mutate-website-content.ts`) is the template a future Services/Portfolio Admin would most naturally follow, the same way Phase 13's product admin became this phase's own template.
+- **Big Red Brain / Obsidian boundary** — unchanged from every prior phase's documentation of this boundary. `site_settings`/`navigation_items`/`homepage_content`/`contact_content` are all **public-facing content**, not private operational data — there is no privacy concern in a future AI layer reading *published* website content. The boundary that matters is unchanged: customer/order/payment/internal-note data stays private and must never automatically become AI-accessible context, exactly as documented under "Checkout + Order foundation" and "Backend + database foundation." No AI or Obsidian integration exists in this codebase yet.
 
 ## Rules for creating new components
 

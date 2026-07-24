@@ -1,5 +1,6 @@
 import { services } from "./services";
 import { MEDIA_TYPES } from "./media";
+import { isLocalMediaPath } from "./media-path";
 import type { Product } from "./products";
 
 // Type/status/category/purchase-mode lists are passed in (not imported) so
@@ -15,10 +16,6 @@ export type ProductValidationOptions = {
   validPurchaseModes: readonly string[];
   validAddOnChargeTypes: readonly string[];
 };
-
-function isLocalImagePath(src: string): boolean {
-  return !/^https?:\/\//i.test(src);
-}
 
 function isNonNegativeInteger(value: number): boolean {
   return Number.isInteger(value) && value >= 0;
@@ -142,7 +139,7 @@ export function collectProductValidationErrors(
       const seenMediaSrc = new Set<string>();
       const expectedPrefix = product.slug ? `/images/products/${product.slug}/` : undefined;
       const checkMediaPath = (src: string, field: string) => {
-        if (!isLocalImagePath(src)) {
+        if (!isLocalMediaPath(src)) {
           errors.push(`${label}: ${field} must be a local path, not an external URL ("${src}")`);
           return;
         }

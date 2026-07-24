@@ -36,6 +36,13 @@
       "when": 1784826157401,
       "tag": "0004_jittery_boomerang",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1784860396113,
+      "tag": "0005_hot_echo",
+      "breakpoints": true
     }
   ]
 }

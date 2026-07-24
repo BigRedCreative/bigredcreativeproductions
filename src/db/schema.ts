@@ -253,3 +253,133 @@ export const orderLinesRelations = relations(orderLines, ({ one }) => ({
 export const auditLogRelations = relations(auditLog, ({ one }) => ({
   adminUser: one(adminUsers, { fields: [auditLog.adminUserId], references: [adminUsers.id] }),
 }));
+
+// ---------------------------------------------------------------------
+// Phase 14 — Website Content Admin. Four small, typed tables, deliberately
+// NOT one giant untyped JSON blob — see CLAUDE.md "Website content admin"
+// for the full architecture writeup. Every table here is a pure content
+// store with no FK relationship to products/customers/orders; "who edited
+// what, when" is already covered by audit_log, so these rows don't
+// duplicate that.
+//
+// FALLBACK PRINCIPLE: the existing src/config/site.ts, src/data/homepage.ts
+// (hero export), and src/data/navigation.ts stay in the codebase unchanged
+// as the fallback source — these tables are seeded from their CURRENT
+// values verbatim, so the first database-backed render is byte-identical
+// to what's live today. Nothing here replaces those files this phase.
+// ---------------------------------------------------------------------
+
+// site_settings — a singleton row (id is always the literal string
+// "default"; the application only ever updates this one row, never creates
+// a second one). Backs the admin UI's General/Branding/SEO/Contact-email
+// groupings, even though it's one table — the admin UI's section layout is
+// a presentation choice, not a database structure. socialLinks stays a
+// small, bounded JSONB array (mirrors the existing SocialLink type in
+// site.ts) since it's a variable-length list, not a giant blob.
+export const siteSettings = pgTable("site_settings", {
+  id: text("id").primaryKey(),
+  siteName: text("site_name").notNull(),
+  legalName: text("legal_name").notNull(),
+  // Canonical brand/footer tagline — distinct from homepageContent.tagline,
+  // which is the Hero-section-specific tagline. Kept deliberately separate
+  // per Phase 14 approval, not collapsed into one shared field.
+  tagline: text("tagline").notNull(),
+  contactEmail: text("contact_email").notNull(),
+  // Reserved: siteConfig has no phone field today and nothing renders one
+  // yet. Nullable, not required, ready for a future phase to wire up.
+  contactPhone: text("contact_phone"),
+  location: text("location").notNull(),
+  // Reserved: siteConfig.socialLinks exists today but is always empty and
+  // rendered nowhere. Kept as the same shape so populating it later needs
+  // no schema change.
+  socialLinks: jsonb("social_links").notNull().$type<{ platform: string; url: string }[]>().default([]),
+  metaTitle: text("meta_title").notNull(),
+  metaDescription: text("meta_description").notNull(),
+  ogDescription: text("og_description").notNull(),
+  // Reserved: layout.tsx's openGraph metadata has no `images` field wired
+  // up yet — nullable until a future phase adds that rendering.
+  ogImageSrc: text("og_image_src"),
+  // Feeds metadataBase (`new URL(...)`) — validated as an absolute https
+  // URL at the mutation boundary, never trusted as-is from admin input.
+  canonicalUrl: text("canonical_url").notNull(),
+  logoHorizontalSrc: text("logo_horizontal_src").notNull(),
+  logoWhiteSrc: text("logo_white_src").notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// navigation_items — genuinely multi-row, fully scalar (no JSONB needed;
+// every field is independently validated). One table covers both the
+// existing primaryNav array (`placement: "primary"`, ordered by sortOrder)
+// and the single headerCta object (`placement: "header_cta"`) from
+// src/data/navigation.ts, rather than two near-identical tables.
+export const NAVIGATION_PLACEMENTS = ["primary", "header_cta"] as const;
+export type NavigationPlacement = (typeof NAVIGATION_PLACEMENTS)[number];
+
+export const navigationItems = pgTable("navigation_items", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  placement: text("placement").notNull().$type<NavigationPlacement>(),
+  label: text("label").notNull(),
+  // Validated server-side at write time (relative path, "#anchor", https://,
+  // or mailto: only — never javascript:/data:/vbscript: or bare http://).
+  // Button.tsx and Header.tsx render this directly with no runtime
+  // sanitization, exactly like every other href in this codebase today —
+  // safety has to come from what's allowed to be written, not from
+  // escaping at render time.
+  href: text("href").notNull(),
+  enabled: boolean("enabled").notNull().default(true),
+  sortOrder: integer("sort_order").notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// homepage_content — the one Phase 14 table with a draft/published split,
+// because it's the one piece of website content where "preview before it
+// goes live" has real value (the first thing every visitor sees). Modeled
+// as exactly two rows differentiated by `status`, never more — this
+// mirrors the mental model already established by products.status, at a
+// fraction of the complexity: no version history table, just "the one
+// being edited" and "the one that's live". The admin always updates one of
+// these two rows in place; "publish" copies draft column values onto the
+// published row inside one transaction (see CLAUDE.md).
+//
+// heroImageSrc/heroImageAlt/secondaryCtaLabel/secondaryCtaHref are reserved
+// per Phase 14 approval: the columns exist so a future phase doesn't need
+// a migration to add them, but Hero.tsx renders neither an image nor a
+// second CTA this phase — the homepage stays exactly as it looks today.
+export const HOMEPAGE_CONTENT_STATUSES = ["draft", "published"] as const;
+export type HomepageContentStatus = (typeof HOMEPAGE_CONTENT_STATUSES)[number];
+
+export const homepageContent = pgTable("homepage_content", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  status: text("status").notNull().$type<HomepageContentStatus>(),
+  badgePrimary: text("badge_primary").notNull(),
+  badgeSecondary: text("badge_secondary").notNull(),
+  eyebrow: text("eyebrow").notNull(),
+  headlineLead: text("headline_lead").notNull(),
+  headlineAccent: text("headline_accent").notNull(),
+  tagline: text("tagline").notNull(),
+  supportingCopy: text("supporting_copy").notNull(),
+  ctaLabel: text("cta_label").notNull(),
+  ctaHref: text("cta_href").notNull(),
+  heroImageSrc: text("hero_image_src"),
+  heroImageAlt: text("hero_image_alt"),
+  secondaryCtaLabel: text("secondary_cta_label"),
+  secondaryCtaHref: text("secondary_cta_href"),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+// contact_content — a singleton row (same "default"-id convention as
+// site_settings), scoped to exactly the fields ContactForm.tsx actually
+// renders as section copy (kicker/heading/description/submit label). The
+// form's own field labels/placeholders/service options stay code-owned in
+// this phase — narrower scope than "every string in the component", matching
+// "content likely to change often" rather than form microcopy. Immediate/
+// current — no draft/published split, per Phase 14 approval (no concrete
+// staging need identified for this content).
+export const contactContent = pgTable("contact_content", {
+  id: text("id").primaryKey(),
+  kicker: text("kicker").notNull(),
+  heading: text("heading").notNull(),
+  description: text("description").notNull(),
+  submitLabel: text("submit_label").notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});
