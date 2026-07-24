@@ -39,6 +39,16 @@ src/
         src/server/queries/site-content.ts) instead of importing static data/config constants
         directly — see "Website content admin". Hero.tsx accepts an optional `content` override
         prop, reused by the admin draft preview, the same pattern ProductHero already established.
+        As of Phase 16, Header/Footer also accept an optional `brandVariant` prop
+        ("published" | "draft") controlling which brand_settings row their rendered logo
+        resolves against — see "Brand Controls".
+    BrandTokens.tsx
+      — Phase 16: a server component wrapping page content in a styled `<div>` that sets the
+        resolved brand colors as real CSS custom properties, plus explicitly redeclares its own
+        `background`/`color` (necessary since `body`'s own background/color in globals.css is
+        fixed at an ANCESTOR element this wrapper can't reach upward). Imported per public
+        top-level page (never the root layout — see "Brand Controls" for why) and by the one
+        admin brand-preview page with `variant="draft"`.
     ProjectHero.tsx, ProjectDetails.tsx, ProjectGallery.tsx, ProjectResults.tsx, ProjectNavigation.tsx
       — sections used only on /work/[slug] project detail pages
     ServiceHero.tsx, ServiceCapabilities.tsx, ServiceDeliverables.tsx, ServiceProcess.tsx, ServiceCTA.tsx
@@ -91,6 +101,14 @@ src/
         ProductsFilterBar's native-GET-form pattern exactly. MediaStatusToggle is a single
         fieldless button bound to either "archive" or "unarchive" depending on current status.
         MediaReplaceForm uploads a new file under the SAME permanent asset id.
+    BrandForm.tsx, ColorField.tsx, LogoPickerField.tsx, PublishBrandButton.tsx
+      — the Phase 16 Brand Controls admin UI, see "Brand Controls". ColorField pairs a native
+        <input type="color"> with a readable hex text field, kept in sync — the admin never
+        types or sees a CSS variable name. LogoPickerField is a single-slot "Choose from Media
+        Library" picker, the same toggle-panel/grid pattern ProductMediaEditor established,
+        sized down to one selection. BrandForm computes live, non-blocking WCAG contrast
+        warnings client-side (src/data/contrast.ts, no new dependency). PublishBrandButton
+        mirrors PublishHeroButton's fieldless draft-to-published copy pattern exactly.
 
   data/
     homepage.ts    — homepage copy (hero, ticker, manifesto, statement, studio, process, contact
@@ -117,6 +135,9 @@ src/
     products.validate.ts — collectProductValidationErrors(): the one product validator, reused by both
                           admin mutations (runtime) and, historically, build-time array checks
     money.ts          — centralized Money (integer-cent) formatting, see "Store (storefront UI)"
+    contrast.ts         — contrastRatio(): pure WCAG relative-luminance contrast math, no
+                          dependency — used client-side by BrandForm for non-blocking warnings,
+                          see "Brand Controls"
     store.ts            — copy for the /store index page only (heading, intro, empty state)
     cart.ts            — CartItem/CartOptionSelection/CartPackageSelection/CartAddOnSelection
                           types, isCartEligible(), buildCartItem(), getConfigurationSignature()
@@ -139,9 +160,9 @@ src/
   db/
     schema.ts   — Drizzle table/sequence definitions (admin_users, audit_log, products, customers,
                    orders, order_lines, order_number_seq, site_settings, navigation_items,
-                   homepage_content, contact_content, media_assets) — see "Backend + database
-                   foundation", "Product admin + database-backed catalog", "Website content
-                   admin", and "Media Library"
+                   homepage_content, contact_content, media_assets, brand_settings) — see
+                   "Backend + database foundation", "Product admin + database-backed catalog",
+                   "Website content admin", "Media Library", and "Brand Controls"
     index.ts      — getDb(): lazy, server-only Neon/Drizzle client, throws only when actually called
 
   server/
@@ -191,6 +212,16 @@ src/
                           (batch, used by catalog.ts's resolution step), getActiveImageAssetsForPicker(),
                           findProductsReferencingMediaAsset() (the query-time usage scan) — the ONE
                           place anything in the app reads a media_assets row — see "Media Library"
+    validate-brand-color.ts    — validateAndNormalizeColor(): accepts only #RGB/#RRGGBB, normalizes to
+                          uppercase #RRGGBB, rejects everything else — see "Brand Controls"
+    mutate-brand.ts        — saveBrandDraftAction()/publishBrandAction(): the only place a
+                          brand_settings row is written — see "Brand Controls"
+    queries/brand.ts        — server-only, database-backed brand reads: getPublishedBrandTokens(),
+                          getDraftBrandTokens() (both field-level-fallback-safe against
+                          globals.css's own :root defaults, and both resolve logo Media Library
+                          selections against site_settings' existing paths as fallback),
+                          getBrandSettingsRowForAdmin() — the ONE place anything in the app reads
+                          brand_settings from Neon — see "Brand Controls"
 
   auth.ts                — Auth.js v5 config (Google OAuth, JWT sessions, no adapter tables)
   proxy.ts                — Next.js 16's proxy convention (not middleware.ts) — admin fast-path redirect only
@@ -216,6 +247,7 @@ CLI-only files — see "Backend + database foundation" → "Database migrations"
 - **Portfolio projects** → `src/data/projects.ts`
 - **Catalog products** — created/edited/published/archived through **Admin → Products → New Product** (`/admin/products`), never by editing source code — see "Product admin + database-backed catalog"
 - **Product images/artwork** — uploaded and selected through **Admin → Media** (`/admin/media`) and the product edit form's "Choose from Media Library" picker — see "Media Library". Manually-typed local paths under `public/images/products/[slug]/` still work exactly as before; the two approaches coexist.
+- **Brand colors, buttons, and logos** — edited through **Admin → Website → Branding** (`/admin/website/branding`, draft/preview/publish), never by editing `globals.css` directly — see "Brand Controls". `globals.css`'s `:root` values are now the fallback only.
 - **Store index page copy** (heading, intro, empty state) → `src/data/store.ts`
 - **Colors, spacing, shadows, borders, durations** → `src/app/globals.css` `:root` custom properties (mirrored for reference in `src/config/theme.ts`, but globals.css is the source of truth the browser actually uses)
 - **Section order / anchor IDs / enabling-disabling a section** → `src/config/sections.ts`, then keep `src/app/page.tsx`'s JSX order in sync
@@ -940,6 +972,8 @@ Next.js 16 **renamed** the `middleware.ts` file convention to `proxy.ts` (export
 /admin/website/navigation        — header navigation editor (protected)
 /admin/website/contact         — contact section editor (protected)
 /admin/website/seo            — SEO & sharing (protected)
+/admin/website/branding        — Brand Controls: colors, buttons, logos — draft/preview/publish (protected) — see "Brand Controls"
+/admin/website/branding/preview    — admin-authenticated draft preview (protected)
 /admin/media               — media library grid: upload, search, filter, pagination (protected) — see "Media Library"
 /admin/media/[id]             — media detail: preview, alt/caption edit, archive/unarchive, replace (protected)
 ```
@@ -1340,11 +1374,109 @@ Using your own real upload (not seeded, not synthetic): uploaded a real image th
 
 ### Not built this phase
 
-Video upload/processing/transcoding (the schema is video-ready — `type: "video"`, format-agnostic `mimeType`/`sizeBytes`/`storageProvider` — but no upload path or player exists). AI alt-text generation (alt text is admin-typed only, never invented). Website-content wiring — `site_settings`'s logos/OG image and `homepage_content`'s reserved hero image field do **not** reference `media_assets` yet; that remains planned, not built, exactly as Phase 14 already scoped it. A dedicated legacy-local-file "represent without uploading" registration UI (deferred — existing local media continues working purely through the untouched manual-path input, needing no Media Library involvement at all). Orphaned-previous-blob cleanup tooling (see Replace, above). Portfolio/Services admin, a brand color/font editor, an arbitrary file manager, client-facing uploads, Big Red Brain, Obsidian — none of this is touched, same boundary already established by every prior phase.
+Video upload/processing/transcoding (the schema is video-ready — `type: "video"`, format-agnostic `mimeType`/`sizeBytes`/`storageProvider` — but no upload path or player exists). AI alt-text generation (alt text is admin-typed only, never invented). Website-content wiring — `site_settings`'s OG image and `homepage_content`'s reserved hero image field do **not** reference `media_assets` yet. `site_settings`'s logo fields specifically gained Media Library integration in Phase 16, but through `brand_settings`, not `site_settings` itself — see "Brand Controls" below. A dedicated legacy-local-file "represent without uploading" registration UI (deferred — existing local media continues working purely through the untouched manual-path input, needing no Media Library involvement at all). Orphaned-previous-blob cleanup tooling (see Replace, above). Portfolio/Services admin, a font editor, an arbitrary file manager, client-facing uploads, Big Red Brain, Obsidian — none of this is touched, same boundary already established by every prior phase.
 
 ### Future media expansion (documentation only)
 
 `media_assets` is shaped so later work extends cleanly, without a redesign: a video upload phase adds validation/a player/poster handling on top of the same table; website-content wiring (logos, hero image, OG image) would apply the exact same optional-`mediaAssetId`-plus-live-resolution pattern already proven on products; a real orphaned-blob cleanup job would read `storageKey`s no longer referenced by any current `media_assets.url` and reconcile against a Blob listing; Portfolio/Services media could eventually route through this same library instead of `public/images/projects|services/`. None of this is scheduled — it's recorded so a future phase doesn't have to re-derive the shape from scratch.
+
+## Brand Controls
+
+**Status: a real, working admin-controlled system for the site's core visual identity — colors, the transactional-button palette, and logo selection — with a draft/preview/publish workflow, backed by a small, deliberately scoped preparatory CSS refactor that changed zero pixels on its own.** Still no typography control, no arbitrary CSS editor, no font upload — deliberately out of scope, see below.
+
+### The CSS refactor — zero visual change, on purpose
+
+Before any of this could be admin-controlled, `src/app/globals.css` needed three small, surgical splits — every new default is byte-identical to the value it was split from, so the refactor alone changed nothing a visitor could see:
+
+1. **`--text` split from `--black`.** `--black` used to drive text color, borders, *and* shadows all at once — there was no way to change text color independently. Every genuinely-text usage of `var(--black)` (10 rules: `body`, `.hero-sticker`, `.portfolio-filter`, `.media-video-badge`, `.cart-item-remove`, `.cart-summary-deposit`, `.checkout-form label`, `.checkout-form input/textarea`, `.checkout-secondary-button`, `.checkout-fallback-note a`) now reads `var(--text)` instead. **`--black` keeps driving borders and shadows exactly as before** — and, worth knowing, it *also* still drives a handful of dark-surface backgrounds that were never split out into their own token (footer, ticker, `.header-cta`) because they weren't part of the requested field list — splitting those further would have started exposing "every CSS property," which was explicitly out of scope. The "Border color" admin field is honestly documented as also affecting those surfaces, not just borders.
+2. **`--gray` activated.** It was declared in `:root` but never actually referenced anywhere in `globals.css` — real muted text used **hardcoded `#555` and `#777` literals in 18 separate rules**, found by direct inspection, not assumption. All 18 now read `var(--gray)`. One muted-gray literal, `#bbb` on `.statement p`, was deliberately **left untouched** — `.statement` has a black background, so `#bbb` is a *different*, dark-background-appropriate shade, not the same "muted text" concept at all; conflating them would have been a real, if subtle, design regression.
+3. **`--button-bg`/`--button-text`/`--button-hover-bg` introduced**, applied to exactly the three buttons that already shared one consistent solid-background/red-hover pattern: `form button` (the contact form submit), `.cart-checkout-button`, `.checkout-submit-button` (including its `:disabled:hover` state). **`.round-button` (the hero CTA) and `.header-cta` (the nav button) are deliberately excluded** — they're visually distinct, intentional design choices, not part of this shared system; forcing them in would have been a redesign, not a refactor. `form button` itself has no hover state at all today — none was added, since adding one would be new behavior, not a like-for-like token swap.
+
+Every one of these was verified with a real `npm run build` immediately after the refactor, before any database/admin code was written.
+
+### Four small, typed tables become five — `brand_settings`
+
+Mirrors `homepage_content`'s exact draft/published two-row shape (`drizzle/0007_friendly_scarecrow.sql`):
+
+```
+id                     uuid PK
+status                 text not null   -- 'draft' | 'published'
+primaryColor           text not null   -- validated, normalized "#RRGGBB"
+accentColor            text not null
+backgroundColor        text not null
+surfaceColor           text not null
+textColor              text not null
+mutedTextColor         text not null
+borderColor            text not null
+buttonBackground       text not null
+buttonText             text not null
+buttonHoverBackground  text not null
+logoHorizontalMediaAssetId  text, references media_assets(id) on delete set null
+logoWhiteMediaAssetId       text, references media_assets(id) on delete set null
+updatedAt              timestamptz not null default now()
+```
+
+**Logo references live on `brand_settings`, not `site_settings`** — a deliberate divergence from how `site_settings.logoHorizontalSrc`/`logoWhiteSrc` themselves work (those stay immediate/current, untouched). The reason: you wanted logo selection to participate in the *same* Save Draft → Preview → Publish workflow as colors, so it needed to live wherever that draft/published pair already exists. `site_settings`' existing static paths remain the safe fallback whenever a brand row has no Media Library selection — nothing about how those two columns work changed.
+
+### Content fallback — two layers deep
+
+Public reads (`src/server/queries/brand.ts`) are field-level-fallback-safe at **two levels**: first against `globals.css`'s own hardcoded `:root` defaults (byte-identical constants baked into `CSS_DEFAULTS`, so a missing/unreachable database never blanks a color), and for logos, against `site_settings`' existing immediate/current path fields (so a brand row with no Media Library selection still renders the real logo, not a broken image). The migration's seed `INSERT`s copied every color verbatim from `globals.css` at the moment of migration, so the first database-backed render was byte-identical to what was live immediately before cutover.
+
+### Draft/publish — colors and logos together
+
+`homepage_content`'s draft/published model, applied identically to the *entire* brand row (colors and logo selections as one unit, per your explicit choice): `/admin/website/branding` edits the **draft** row only (`saveBrandDraftAction`) and never touches the public site on save. `/admin/website/branding/preview` renders the **exact same public components** the live site uses — `Header`, `Hero`, `ContactForm` (specifically because its submit button is one of the three tokenized buttons), `Footer` — passed `brandVariant="draft"` and wrapped in `<BrandTokens variant="draft">`, the same "reuse the real component" principle Phase 13/14 already established for their own previews. Publishing (`publishBrandAction`) takes **no form fields of its own** — it copies whatever is currently saved in the draft row (all 10 colors + both logo selections, as one transactional unit) onto the published row, writes the audit event, and revalidates. Publish-without-saving-first publishes the last-saved draft, never unsaved form edits — same discipline as the homepage hero.
+
+### `<BrandTokens />` — Option B, and why
+
+`src/app/layout.tsx` is the **true root layout — it wraps `/admin/*` too** (`admin/layout.tsx` nests inside it), and `admin.css` deliberately reuses the exact same `--red`/`--black`/etc. custom-property *names* as `globals.css`. Injecting a brand override at the root layout would leak published/draft brand colors straight into your own admin dashboard. Per your approval, `<BrandTokens />` is instead imported **per public top-level page** — `page.tsx`, `store/page.tsx`, `store/[slug]/page.tsx`, `work/[slug]/page.tsx`, `services/[slug]/page.tsx`, `cart/page.tsx`, `checkout/page.tsx` — the exact same place `Header` is already imported (Phase 14 already established and accepted this per-page pattern for nav, for the same reason). No admin page ever imports it, so there's no leak path.
+
+It renders a wrapping `<div>` — not `:root` — with the resolved colors set as real CSS custom properties, **and** its own `background: var(--cream)` / `color: var(--text)` explicitly redeclared. That second part is necessary, not decorative: `body`'s own `background`/`color` in `globals.css` are fixed at the `body` element itself, which is an *ancestor* of this wrapper — only descendants pick up a custom property redeclared here, so without re-declaring `background`/`color` directly on the wrapper, any section relying on the inherited default (most of them; `background` isn't an inherited CSS property) would still show `body`'s original, unoverridden color underneath.
+
+Logos are **not** a CSS concern — `<img src>` can't be changed by a custom property — so `Header`/`Footer` independently call `getPublishedBrandTokens()` (or `getDraftBrandTokens()`, via their own new optional `brandVariant` prop, mirroring `Hero.tsx`'s existing `content`-override pattern) to get the actual resolved logo URL.
+
+### Color validation
+
+`src/server/validate-brand-color.ts` — the one place any brand color is checked, for every mutation. Accepts **only** `#RGB` or `#RRGGBB`; normalizes to uppercase 6-digit form before storage. Rejects everything else outright: `rgb()`/`hsl()`, color keywords, `var()`, `url()`, semicolons/braces, anything resembling a CSS expression. The database only ever stores a flat hex string; `<BrandTokens />` turns that string into a real custom property via React's own style-object serialization — never a hand-built CSS string — so there's no path from a stored value to arbitrary CSS injection.
+
+### Contrast warnings — informational, never blocking
+
+`src/data/contrast.ts` — a small, dependency-free WCAG relative-luminance contrast calculator (~30 lines, no library), run **client-side** in `BrandForm` as colors are picked. Checks text-on-background, muted-text-on-background, and button-text-on-button-background against the WCAG AA 4.5:1 threshold, showing an inline warning when a pair falls short. **Never blocks Save Draft or Publish** — a deliberate, low-contrast combination is still your call to make.
+
+### Admin editor
+
+```
+/admin/website/branding        — colors (color-picker + hex pair, never raw CSS variable names),
+                          buttons, logo pickers, "currently live" reference, Save Draft, Publish
+/admin/website/branding/preview    — admin-authenticated draft preview
+```
+
+`ColorField.tsx` pairs a native `<input type="color">` with a free-typing hex text field, kept in sync — you never have to type or understand `--red`/`--black`/etc. `LogoPickerField.tsx` is a single-slot "Choose from Media Library" picker (the same toggle-panel/grid pattern `ProductMediaEditor.tsx` already established for repeatable product media, sized down to one selection) — selecting a thumbnail sets the `mediaAssetId` directly, no path ever typed; a "Use fallback instead" button clears the selection back to the `site_settings` path. `src/config/admin-nav.ts`'s existing "Website" entry already covers this — `/admin/website`'s hub page gained a sixth tile.
+
+### Audit events
+
+`website.brand.draft_saved`, `website.brand.published` — metadata stays small (`{ primaryColor, accentColor }`), never a full palette dump. `website.logo.updated` was proposed at the architecture stage but folded into `website.brand.draft_saved`/`published` instead, since logo selections save and publish as part of the same single brand-row transaction as colors — a separate event would have logged the same moment twice.
+
+### Revalidation
+
+On publish: immediate `revalidatePath()` for the known major routes (`/`, `/store`, `/cart`, `/checkout`) — the exact same fixed list and reasoning already established for Phase 14's navigation publish. Deep dynamic detail routes (`/store/[slug]`, `/work/[slug]`, `/services/[slug]`) rely on their existing `revalidate = 3600` ISR fallback, the same documented, accepted tradeoff — not a new gap Phase 16 introduces.
+
+### Server Actions and session expiration — a discovered edge case, not a code bug
+
+During real acceptance testing, Save Draft and Publish appeared to silently do nothing — no error, no success message, no database change. Investigation (full transcript: the flow was traced end to end, a standalone regression harness replicating `saveBrandDraftAction`'s/`publishBrandAction`'s validation/transaction/audit logic passed 17/17, and the dev server's own request log was inspected) found the actual cause: **the admin's session had gone stale between loading the page and clicking submit**, and `requireAdminUser()` — correctly, per its documented behavior since Phase 12 — called `redirect("/admin/login")` as the very first line of both actions, before any validation or database code ever ran. A page load only proves the session was valid *at that moment*; a Server Action independently re-checks `auth()` itself (Server Actions are not covered by `proxy.ts`'s fast-path redirect — see "Admin foundation"), so a session that expires while a form is being filled out produces exactly this symptom: the mutation silently never starts.
+
+**This is the authorization boundary working as designed, not a defect** — nothing about brand-controls-specific code was ever at fault, confirmed by the regression harness passing cleanly in isolation. The real gap it exposed is a **UX one**: none of `saveBrandDraftAction`, `publishBrandAction`, or any other admin Server Action in this codebase currently distinguishes "your session expired, please sign in again" from "nothing happened" in what's shown back to the admin. **Documented here as a known, minor follow-up for a future phase** — not fixed this phase, since it would touch every existing admin mutation's error-rendering, not just Brand Controls. Signing in again and retrying resolves it immediately; no data is ever at risk, since the redirect happens strictly before any write.
+
+### Live acceptance test — what was genuinely verified
+
+Using your own real edit through `/admin/website/branding` (not seeded, not synthetic): the primary color was changed to **`#E70810`** and saved as a draft → confirmed private (`/admin/website/branding/preview` showed the new color; the public homepage still rendered the original `#D71920` default) → published → the public homepage updated to `#E70810` **with no source edit, no commit, and no redeploy** — verified directly in the rendered HTML (`--red:#E70810`), while `globals.css`'s own `:root` default stayed exactly `#d71920` throughout, proving the value reached the page exclusively through `<BrandTokens>` reading Neon. `/admin/login` was independently checked and shows no trace of the override, confirming admin isolation held. Exactly one `website.brand.draft_saved` and one `website.brand.published` audit event were recorded, both correctly attributed to the real owner account, with small, safe metadata (`{ primaryColor, accentColor }`). Throughout: `homepage_content`, the real `Custom Graphic Design` product, the one real Media Library asset, and the real owner `admin_users` row all stayed untouched, and `customers`/`orders`/`order_lines` stayed at zero. **`#E70810` is your genuine, live, currently-published primary color** — this is real acceptance-test history being documented, not a placeholder value to revert.
+
+### Not built this phase
+
+Typography/font control (exactly one `font-family` declaration exists in the whole site, no web font, no `@font-face` — there's no small, safe control available without building real font-loading infrastructure, confirming the brief's own instinct to leave it code-owned). An arbitrary CSS editor. Font upload. Portfolio/Services admin. AI styling. Obsidian. `.round-button`/`.header-cta` styling remains fully code-owned, by design. A clearer "your session expired" message on admin Server Action failures (see above — a real, minor, documented gap, not specific to Brand Controls).
+
+### Future visual controls (documentation only)
+
+`brand_settings` is shaped so a future phase can extend this same admin without a redesign: typography (a font picker plus real `@font-face`/web-font loading infrastructure would need to be built first — deliberately not started this phase, per the brief's own instinct); `.round-button`/`.header-cta` styling, if ever opened to admin control, would need their own explicit approval since they're intentional design-system outliers, not part of this shared token system; a version-history/rollback view over `brand_settings` (today only "current draft" and "current published" exist, no history log beyond `audit_log`'s own small metadata); and the same clearer session-expiration messaging noted above, generalized across every admin Server Action rather than solved brand-controls-specific. None of this is scheduled — recorded so a future phase doesn't have to re-derive the shape from scratch.
 
 ## Rules for creating new components
 

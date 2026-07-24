@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Header from "@/components/Header";
 import Footer from "@/components/Footer";
+import BrandTokens from "@/components/BrandTokens";
 import StoreGrid from "@/components/StoreGrid";
 import SectionHeading from "@/components/ui/SectionHeading";
 import { getPublishedProducts } from "@/server/queries/catalog";
@@ -21,18 +22,20 @@ export default async function StorePage() {
   const products = await getPublishedProducts();
 
   return (
-    <main>
-      <Header />
-      <section className="section">
-        <SectionHeading
-          wrapperClassName="section-top"
-          kicker={storeIntro.kicker}
-          heading={storeIntro.heading}
-          description={storeIntro.intro}
-        />
-        <StoreGrid products={products} />
-      </section>
-      <Footer />
-    </main>
+    <BrandTokens>
+      <main>
+        <Header />
+        <section className="section">
+          <SectionHeading
+            wrapperClassName="section-top"
+            kicker={storeIntro.kicker}
+            heading={storeIntro.heading}
+            description={storeIntro.intro}
+          />
+          <StoreGrid products={products} />
+        </section>
+        <Footer />
+      </main>
+    </BrandTokens>
   );
 }

@@ -28,6 +28,11 @@ const sections = [
     title: "SEO & Sharing",
     description: "Default page title, description, canonical URL, and social sharing description.",
   },
+  {
+    href: "/admin/website/branding",
+    title: "Branding",
+    description: "Colors, buttons, and logos. Edit, preview privately, then publish.",
+  },
 ];
 
 export default function AdminWebsitePage() {
