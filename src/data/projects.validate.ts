@@ -63,7 +63,13 @@ export function collectProjectValidationErrors(
     }
 
     const expectedPrefix = project.slug ? `/images/projects/${project.slug}/` : undefined;
-    const checkImagePath = (src: string, field: string) => {
+    // Phase 17 — a Media Library selection resolves `src` to a live Blob
+    // CDN URL (https://...), not a local path, so the local-path/folder
+    // check only applies when there's no mediaAssetId. Exact same
+    // exemption already established for products.validate.ts and
+    // services.validate.ts.
+    const checkImagePath = (src: string, mediaAssetId: string | undefined, field: string) => {
+      if (mediaAssetId) return;
       if (!isLocalImagePath(src)) {
         errors.push(`${label}: ${field} must be a local path, not an external URL ("${src}")`);
         return;
@@ -73,18 +79,32 @@ export function collectProjectValidationErrors(
       }
     };
 
-    if (project.thumbnail) checkImagePath(project.thumbnail.src, "thumbnail.src");
-    if (project.heroImage) checkImagePath(project.heroImage.src, "heroImage.src");
+    if (project.thumbnail) checkImagePath(project.thumbnail.src, undefined, "thumbnail.src");
+    if (project.heroImage) checkImagePath(project.heroImage.src, project.heroImage.mediaAssetId, "heroImage.src");
 
     if (project.gallery) {
       const seenGallerySrc = new Set<string>();
       project.gallery.forEach((image, i) => {
-        checkImagePath(image.src, `gallery[${i}].src`);
+        checkImagePath(image.src, image.mediaAssetId, `gallery[${i}].src`);
         if (seenGallerySrc.has(image.src)) {
           errors.push(`${label}: duplicate gallery image "${image.src}"`);
         } else {
           seenGallerySrc.add(image.src);
         }
+      });
+    }
+
+    if (project.results) {
+      project.results.forEach((result, i) => {
+        if (!result.label?.trim()) errors.push(`${label}: results[${i}].label is required`);
+        if (!result.value?.trim()) errors.push(`${label}: results[${i}].value is required`);
+      });
+    }
+
+    if (project.credits) {
+      project.credits.forEach((credit, i) => {
+        if (!credit.role?.trim()) errors.push(`${label}: credits[${i}].role is required`);
+        if (!credit.name?.trim()) errors.push(`${label}: credits[${i}].name is required`);
       });
     }
   }

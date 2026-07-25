@@ -141,3 +141,95 @@ export async function getAdjacentProjects(slug: string): Promise<{
     next: published[(index + 1) % published.length],
   };
 }
+
+// ---------------------------------------------------------------------
+// Admin reads — every entity, every status, both version rows where they
+// exist. No field-level fallback merge — an editor needs to see exactly
+// what's stored, the same principle already established by
+// getServiceEntityForAdmin() and every other admin detail/edit read in
+// this codebase.
+// ---------------------------------------------------------------------
+
+export type PortfolioAdminListRow = {
+  id: string;
+  status: (typeof portfolioProjects.$inferSelect)["status"];
+  sortOrder: number;
+  updatedAt: Date;
+  draft: { slug: string; title: string; featured: boolean } | null;
+  published: { slug: string; title: string; featured: boolean } | null;
+};
+
+// Flat, unpaginated — 4 projects today, no filter/search UI, mirrors
+// listServicesForAdmin()'s exact reasoning.
+export async function listPortfolioForAdmin(): Promise<PortfolioAdminListRow[]> {
+  const db = getDb();
+  const [entityRows, versionRows] = await Promise.all([
+    db.select().from(portfolioProjects).orderBy(asc(portfolioProjects.sortOrder)),
+    db.select().from(portfolioProjectVersions),
+  ]);
+
+  const versionsByProject = new Map<
+    string,
+    { draft?: typeof portfolioProjectVersions.$inferSelect; published?: typeof portfolioProjectVersions.$inferSelect }
+  >();
+  for (const version of versionRows) {
+    const entry = versionsByProject.get(version.projectId) ?? {};
+    if (version.versionType === "draft") entry.draft = version;
+    else entry.published = version;
+    versionsByProject.set(version.projectId, entry);
+  }
+
+  return entityRows.map((entity) => {
+    const versions = versionsByProject.get(entity.id) ?? {};
+    return {
+      id: entity.id,
+      status: entity.status,
+      sortOrder: entity.sortOrder,
+      updatedAt: entity.updatedAt,
+      draft: versions.draft
+        ? { slug: versions.draft.slug, title: versions.draft.title, featured: versions.draft.featured }
+        : null,
+      published: versions.published
+        ? { slug: versions.published.slug, title: versions.published.title, featured: versions.published.featured }
+        : null,
+    };
+  });
+}
+
+export type PortfolioAdminDetail = {
+  entity: {
+    id: string;
+    status: (typeof portfolioProjects.$inferSelect)["status"];
+    sortOrder: number;
+    createdAt: Date;
+    updatedAt: Date;
+  };
+  draft: Project;
+  published: Project | null;
+};
+
+export async function getPortfolioEntityForAdmin(id: string): Promise<PortfolioAdminDetail | undefined> {
+  const db = getDb();
+  const entityRow = await db.query.portfolioProjects.findFirst({ where: eq(portfolioProjects.id, id) });
+  if (!entityRow) return undefined;
+
+  const versionRows = await db.select().from(portfolioProjectVersions).where(eq(portfolioProjectVersions.projectId, id));
+  const draftRow = versionRows.find((row) => row.versionType === "draft");
+  const publishedRow = versionRows.find((row) => row.versionType === "published");
+  if (!draftRow) return undefined;
+
+  const [draft] = await resolveProjectsMedia([mapProjectRow(entityRow, draftRow)]);
+  const published = publishedRow ? (await resolveProjectsMedia([mapProjectRow(entityRow, publishedRow)]))[0] : null;
+
+  return {
+    entity: {
+      id: entityRow.id,
+      status: entityRow.status,
+      sortOrder: entityRow.sortOrder,
+      createdAt: entityRow.createdAt,
+      updatedAt: entityRow.updatedAt,
+    },
+    draft,
+    published: published ?? null,
+  };
+}
