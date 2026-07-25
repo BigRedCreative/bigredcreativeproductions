@@ -1,8 +1,15 @@
 import Link from "next/link";
 import Image from "next/image";
 import { notFound } from "next/navigation";
-import { getMediaAssetById, findProductsReferencingMediaAsset } from "@/server/queries/media";
+import {
+  getMediaAssetById,
+  findProductsReferencingMediaAsset,
+  findServicesReferencingMediaAsset,
+  findProjectsReferencingMediaAsset,
+} from "@/server/queries/media";
 import { productHref } from "@/data/products";
+import { serviceHref } from "@/data/services";
+import { projectHref } from "@/data/projects";
 import StatusBadge from "@/components/admin/StatusBadge";
 import MediaEditForm from "@/components/admin/MediaEditForm";
 import MediaStatusToggle from "@/components/admin/MediaStatusToggle";
@@ -26,7 +33,12 @@ export default async function AdminMediaDetailPage({ params }: MediaDetailPagePr
     notFound();
   }
 
-  const usageRefs = await findProductsReferencingMediaAsset(id);
+  const [productRefs, serviceRefs, projectRefs] = await Promise.all([
+    findProductsReferencingMediaAsset(id),
+    findServicesReferencingMediaAsset(id),
+    findProjectsReferencingMediaAsset(id),
+  ]);
+  const totalUsageCount = productRefs.length + serviceRefs.length + projectRefs.length;
 
   return (
     <div>
@@ -65,19 +77,54 @@ export default async function AdminMediaDetailPage({ params }: MediaDetailPagePr
 
           <div className="admin-detail-block">
             <h2>Used by</h2>
-            {usageRefs.length === 0 ? (
-              <p className="admin-empty-state">Not currently used by any product.</p>
+            {totalUsageCount === 0 ? (
+              <p className="admin-empty-state">Not currently used by any product, service, or portfolio project.</p>
             ) : (
-              usageRefs.map((ref) => (
-                <div className="admin-line-item" key={ref.productId}>
-                  <p className="admin-line-item-title">{ref.productTitle}</p>
-                  <p className="admin-line-item-meta">
-                    <Link href={`/admin/products/${ref.productId}`}>Edit in admin</Link>
-                    {" · "}
-                    <Link href={productHref(ref.productSlug)}>View on store</Link>
-                  </p>
-                </div>
-              ))
+              <>
+                {productRefs.map((ref) => (
+                  <div className="admin-line-item" key={`product-${ref.productId}`}>
+                    <p className="admin-line-item-title">{ref.productTitle}</p>
+                    <p className="admin-line-item-meta">
+                      Product · <Link href={`/admin/products/${ref.productId}`}>Edit in admin</Link>
+                      {" · "}
+                      <Link href={productHref(ref.productSlug)}>View on store</Link>
+                    </p>
+                  </div>
+                ))}
+                {serviceRefs.map((ref) => (
+                  <div className="admin-line-item" key={`service-${ref.serviceId}-${ref.versionType}`}>
+                    <p className="admin-line-item-title">{ref.serviceTitle}</p>
+                    <p className="admin-line-item-meta">
+                      {ref.versionType === "published" ? (
+                        <>
+                          Service (published) · <Link href={serviceHref(ref.serviceSlug)}>View on site</Link>
+                        </>
+                      ) : (
+                        // No /admin/services/[id] route exists yet (Phase
+                        // 17's admin UI is a future phase) — a private
+                        // draft has no public page to link to either, so
+                        // this is deliberately just a label, not a dead
+                        // link.
+                        "Service (private draft — not public yet)"
+                      )}
+                    </p>
+                  </div>
+                ))}
+                {projectRefs.map((ref) => (
+                  <div className="admin-line-item" key={`project-${ref.projectId}-${ref.versionType}`}>
+                    <p className="admin-line-item-title">{ref.projectTitle}</p>
+                    <p className="admin-line-item-meta">
+                      {ref.versionType === "published" ? (
+                        <>
+                          Portfolio (published) · <Link href={projectHref(ref.projectSlug)}>View on site</Link>
+                        </>
+                      ) : (
+                        "Portfolio (private draft — not public yet)"
+                      )}
+                    </p>
+                  </div>
+                ))}
+              </>
             )}
           </div>
         </div>

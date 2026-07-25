@@ -1,6 +1,6 @@
 import { notFound } from "next/navigation";
 import { getProductById } from "@/server/queries/catalog";
-import { services } from "@/data/services";
+import { getPublishedServices } from "@/server/queries/services";
 import { updateProductAction } from "@/server/mutate-product";
 import { getActiveImageAssetsForPicker } from "@/server/queries/media";
 import ProductForm from "@/components/admin/ProductForm";
@@ -14,7 +14,11 @@ type EditProductPageProps = {
 // database-backed catalog".
 export default async function EditProductPage({ params }: EditProductPageProps) {
   const { id } = await params;
-  const [product, mediaAssets] = await Promise.all([getProductById(id), getActiveImageAssetsForPicker()]);
+  const [product, mediaAssets, services] = await Promise.all([
+    getProductById(id),
+    getActiveImageAssetsForPicker(),
+    getPublishedServices(),
+  ]);
 
   if (!product) {
     notFound();

@@ -8,23 +8,33 @@ import ServiceCapabilities from "@/components/ServiceCapabilities";
 import ServiceDeliverables from "@/components/ServiceDeliverables";
 import ServiceProcess from "@/components/ServiceProcess";
 import ServiceCTA from "@/components/ServiceCTA";
-import { services, getServiceBySlug } from "@/data/services";
+import { getPublishedServices, getServiceBySlug } from "@/server/queries/services";
 
-// Only the slugs returned by generateStaticParams are valid — anything else
-// 404s instead of attempting an on-demand render.
-export const dynamicParams = false;
+// Published slugs known at build time are pre-rendered; anything else (a
+// service published since the last build) renders on demand instead of
+// 404ing — publishing must not require a redeploy. See CLAUDE.md "Services
+// + Portfolio Admin". Was `false` pre-cutover, when this route was still
+// backed by the static services.ts array.
+export const dynamicParams = true;
+
+// Time-based fallback only, matching Store/Product's exact established
+// pattern — no admin mutation UI exists yet to call revalidatePath()
+// directly, so this is what picks up any future content change until that
+// admin UI ships.
+export const revalidate = 3600;
 
 type ServicePageProps = {
   params: Promise<{ slug: string }>;
 };
 
-export function generateStaticParams() {
+export async function generateStaticParams() {
+  const services = await getPublishedServices();
   return services.map((service) => ({ slug: service.slug }));
 }
 
 export async function generateMetadata({ params }: ServicePageProps): Promise<Metadata> {
   const { slug } = await params;
-  const service = getServiceBySlug(slug);
+  const service = await getServiceBySlug(slug);
   if (!service) {
     return {};
   }
@@ -41,7 +51,7 @@ export async function generateMetadata({ params }: ServicePageProps): Promise<Me
 
 export default async function ServicePage({ params }: ServicePageProps) {
   const { slug } = await params;
-  const service = getServiceBySlug(slug);
+  const service = await getServiceBySlug(slug);
 
   if (!service) {
     notFound();

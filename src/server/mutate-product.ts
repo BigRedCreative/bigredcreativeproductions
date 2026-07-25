@@ -19,6 +19,7 @@ import { buildProductFromFormData } from "@/server/build-product-form";
 import { recordAuditEvent } from "@/server/audit-log";
 import { isUniqueViolation } from "@/server/is-unique-violation";
 import { getProductById } from "@/server/queries/catalog";
+import { getPublishedServices } from "@/server/queries/services";
 
 // The only place a product row is created or written. Every export here
 // independently calls requireAdminUser() — this file is a Server Action
@@ -33,13 +34,22 @@ import { getProductById } from "@/server/queries/catalog";
 
 export type ProductFormState = { errors: string[] } | null;
 
-function validateCandidate(id: string, candidate: Omit<Product, "id">): string[] {
+// Phase 17: relatedServiceSlug is now checked against Neon's published
+// services (the live, current catalog) rather than the frozen
+// services.ts array — only a currently-published service is a valid
+// relationship target, matching the same "no stale data authority"
+// principle the whole Services cutover was built on. Async only because
+// of this one Neon read; every other check here remains the same pure,
+// synchronous collectProductValidationErrors() call.
+async function validateCandidate(id: string, candidate: Omit<Product, "id">): Promise<string[]> {
+  const publishedServices = await getPublishedServices();
   return collectProductValidationErrors([{ ...candidate, id }], {
     validTypes: PRODUCT_TYPES,
     validStatuses: PRODUCT_STATUSES,
     validCategories: PRODUCT_CATEGORIES,
     validPurchaseModes: PURCHASE_MODES,
     validAddOnChargeTypes: ADD_ON_CHARGE_TYPES,
+    validServiceSlugs: publishedServices.map((service) => service.slug),
   });
 }
 
@@ -63,7 +73,7 @@ export async function createProductAction(
   }
 
   const id = `prod_${crypto.randomUUID()}`;
-  const validationErrors = validateCandidate(id, parsed.product);
+  const validationErrors = await validateCandidate(id, parsed.product);
   if (validationErrors.length > 0) {
     return { errors: validationErrors };
   }
@@ -111,7 +121,7 @@ export async function updateProductAction(
     return { errors: parsed.errors };
   }
 
-  const validationErrors = validateCandidate(id, parsed.product);
+  const validationErrors = await validateCandidate(id, parsed.product);
   if (validationErrors.length > 0) {
     return { errors: validationErrors };
   }

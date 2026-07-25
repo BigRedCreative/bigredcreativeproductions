@@ -12,7 +12,12 @@ export const PROJECT_CATEGORIES = [
 
 export type ProjectCategory = (typeof PROJECT_CATEGORIES)[number];
 
-export const PROJECT_STATUSES = ["published", "draft"] as const;
+// Phase 17 — "archived" added as a third state, matching the Neon
+// entity-level lifecycle now backing the public routes (see
+// src/server/queries/portfolio.ts). Still optional/undefined-means-
+// published, so every entry in the `projects` array below (none of which
+// sets `status` today) continues to type-check unmodified.
+export const PROJECT_STATUSES = ["published", "draft", "archived"] as const;
 
 export type ProjectStatus = (typeof PROJECT_STATUSES)[number];
 
@@ -30,6 +35,10 @@ export type ProjectImage = {
   // that read poorly on black — e.g. a dark-outlined logo on a transparent
   // background.
   lightBackground?: boolean;
+  // Phase 17 — optional link to a Media Library asset, same non-breaking
+  // extension already made to Media (Phase 15) and ServiceImage. See
+  // src/server/queries/portfolio.ts for the live-resolution read.
+  mediaAssetId?: string;
 };
 
 export type ProjectResult = {
@@ -48,6 +57,10 @@ export type ProjectExternalLink = {
 };
 
 export type Project = {
+  // Phase 17 — populated only by the Neon read path (src/server/queries/
+  // portfolio.ts); no component reads it. Optional so the frozen fallback
+  // array below needs no edits.
+  id?: string;
   slug: string;
   title: string;
   // Short form used in compact UI (prev/next navigation). Defaults to the

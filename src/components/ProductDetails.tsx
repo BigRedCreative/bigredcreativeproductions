@@ -1,13 +1,14 @@
 import Link from "next/link";
 import type { Product } from "@/data/products";
-import { getServiceBySlug, serviceHref } from "@/data/services";
+import { serviceHref } from "@/data/services";
+import { getServiceBySlug } from "@/server/queries/services";
 
 type ProductDetailsProps = {
   product: Product;
 };
 
-export default function ProductDetails({ product }: ProductDetailsProps) {
-  const relatedService = product.relatedServiceSlug ? getServiceBySlug(product.relatedServiceSlug) : undefined;
+export default async function ProductDetails({ product }: ProductDetailsProps) {
+  const relatedService = product.relatedServiceSlug ? await getServiceBySlug(product.relatedServiceSlug) : undefined;
 
   return (
     <section className="studio section">

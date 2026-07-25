@@ -1,8 +1,15 @@
 import "server-only";
 import { and, count, desc, eq, ilike, inArray, or, sql } from "drizzle-orm";
 import { getDb } from "@/db";
-import { mediaAssets, products, MEDIA_ASSET_STATUSES, MEDIA_ASSET_TYPES } from "@/db/schema";
-import type { MediaAssetStatus, MediaAssetType } from "@/db/schema";
+import {
+  mediaAssets,
+  products,
+  serviceVersions,
+  portfolioProjectVersions,
+  MEDIA_ASSET_STATUSES,
+  MEDIA_ASSET_TYPES,
+} from "@/db/schema";
+import type { MediaAssetStatus, MediaAssetType, ContentVersionType } from "@/db/schema";
 
 // The ONE place anything in the app reads a media_assets row from Neon.
 // Server-only, zero insert/update/delete calls — mirrors the exact
@@ -173,4 +180,82 @@ export async function findProductsReferencingMediaAsset(mediaAssetId: string): P
     .from(products)
     .where(sql`${products.media} @> ${containment}::jsonb`);
   return rows.map((row) => ({ productId: row.id, productSlug: row.slug, productTitle: row.title }));
+}
+
+// ---------------------------------------------------------------------
+// Phase 17 — the same query-time usage scan extended to services and
+// portfolio projects. Unlike products (one row, one status), a service/
+// project has TWO version rows (draft, published) that can each
+// independently reference an asset — a usage scan that only checked the
+// published row would miss a media selection an admin has staged in a
+// private draft, which is exactly the case an "in use, are you sure you
+// want to archive this?" warning should catch. Both hero_media_asset_id
+// (a plain column) and gallery (JSONB containment, same operator as
+// products.media above) are checked; results are tagged with which
+// version they came from so the admin UI can show "draft" vs "published"
+// usage distinctly rather than conflating them.
+// ---------------------------------------------------------------------
+
+export type MediaAssetServiceUsageRef = {
+  serviceId: string;
+  serviceSlug: string;
+  serviceTitle: string;
+  versionType: ContentVersionType;
+};
+
+export async function findServicesReferencingMediaAsset(mediaAssetId: string): Promise<MediaAssetServiceUsageRef[]> {
+  const db = getDb();
+  const containment = JSON.stringify([{ mediaAssetId }]);
+  const rows = await db
+    .select({
+      serviceId: serviceVersions.serviceId,
+      slug: serviceVersions.slug,
+      title: serviceVersions.title,
+      versionType: serviceVersions.versionType,
+    })
+    .from(serviceVersions)
+    .where(
+      or(
+        eq(serviceVersions.heroMediaAssetId, mediaAssetId),
+        sql`${serviceVersions.gallery} @> ${containment}::jsonb`,
+      ),
+    );
+  return rows.map((row) => ({
+    serviceId: row.serviceId,
+    serviceSlug: row.slug,
+    serviceTitle: row.title,
+    versionType: row.versionType as ContentVersionType,
+  }));
+}
+
+export type MediaAssetProjectUsageRef = {
+  projectId: string;
+  projectSlug: string;
+  projectTitle: string;
+  versionType: ContentVersionType;
+};
+
+export async function findProjectsReferencingMediaAsset(mediaAssetId: string): Promise<MediaAssetProjectUsageRef[]> {
+  const db = getDb();
+  const containment = JSON.stringify([{ mediaAssetId }]);
+  const rows = await db
+    .select({
+      projectId: portfolioProjectVersions.projectId,
+      slug: portfolioProjectVersions.slug,
+      title: portfolioProjectVersions.title,
+      versionType: portfolioProjectVersions.versionType,
+    })
+    .from(portfolioProjectVersions)
+    .where(
+      or(
+        eq(portfolioProjectVersions.heroMediaAssetId, mediaAssetId),
+        sql`${portfolioProjectVersions.gallery} @> ${containment}::jsonb`,
+      ),
+    );
+  return rows.map((row) => ({
+    projectId: row.projectId,
+    projectSlug: row.slug,
+    projectTitle: row.title,
+    versionType: row.versionType as ContentVersionType,
+  }));
 }

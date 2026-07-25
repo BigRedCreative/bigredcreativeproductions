@@ -8,24 +8,35 @@ import ProjectDetails from "@/components/ProjectDetails";
 import ProjectGallery from "@/components/ProjectGallery";
 import ProjectResults from "@/components/ProjectResults";
 import ProjectNavigation from "@/components/ProjectNavigation";
-import { getPublishedProjects, getProjectBySlug, getAdjacentProjects } from "@/data/projects";
+import { getPublishedProjects, getProjectBySlug, getAdjacentProjects } from "@/server/queries/portfolio";
 
-// Only the slugs returned by generateStaticParams are valid — anything else
-// 404s instead of attempting an on-demand render. Draft projects are
-// excluded here, so their slugs never generate a public route.
-export const dynamicParams = false;
+// Published slugs known at build time are pre-rendered; anything else (a
+// project published since the last build) renders on demand instead of
+// 404ing — publishing must not require a redeploy. See CLAUDE.md "Services
+// + Portfolio Admin". Was `false` pre-cutover, when this route was still
+// backed by the static projects.ts array. Draft/archived projects are
+// still excluded, now via the entity `status = 'published'` filter in
+// src/server/queries/portfolio.ts rather than an array .filter().
+export const dynamicParams = true;
+
+// Time-based fallback only, matching Store/Product's exact established
+// pattern — no admin mutation UI exists yet to call revalidatePath()
+// directly, so this is what picks up any future content change until that
+// admin UI ships.
+export const revalidate = 3600;
 
 type ProjectPageProps = {
   params: Promise<{ slug: string }>;
 };
 
-export function generateStaticParams() {
-  return getPublishedProjects().map((project) => ({ slug: project.slug }));
+export async function generateStaticParams() {
+  const projects = await getPublishedProjects();
+  return projects.map((project) => ({ slug: project.slug }));
 }
 
 export async function generateMetadata({ params }: ProjectPageProps): Promise<Metadata> {
   const { slug } = await params;
-  const project = getProjectBySlug(slug);
+  const project = await getProjectBySlug(slug);
   if (!project) {
     return {};
   }
@@ -42,13 +53,13 @@ export async function generateMetadata({ params }: ProjectPageProps): Promise<Me
 
 export default async function ProjectPage({ params }: ProjectPageProps) {
   const { slug } = await params;
-  const project = getProjectBySlug(slug);
+  const project = await getProjectBySlug(slug);
 
   if (!project) {
     notFound();
   }
 
-  const { previous, next } = getAdjacentProjects(slug);
+  const { previous, next } = await getAdjacentProjects(slug);
 
   return (
     <BrandTokens>
