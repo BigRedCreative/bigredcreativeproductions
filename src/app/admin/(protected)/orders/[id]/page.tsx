@@ -3,15 +3,20 @@ import { notFound } from "next/navigation";
 import { getOrderById } from "@/server/queries/orders";
 import { formatMoney } from "@/data/money";
 import StatusBadge from "@/components/admin/StatusBadge";
+import OrderStatusForm from "@/components/admin/OrderStatusForm";
+import OrderPaymentStatusForm from "@/components/admin/OrderPaymentStatusForm";
+import NoteForm from "@/components/admin/NoteForm";
+import NotesList from "@/components/admin/NotesList";
+import { addOrderNoteAction } from "@/server/mutate-order";
+import type { OrderStatus, PaymentStatus } from "@/data/orders";
 
 type OrderDetailPageProps = {
   params: Promise<{ id: string }>;
 };
 
 // Renders exclusively from the frozen order/order_line snapshots returned
-// by getOrderById() — no live Product lookup anywhere on this page, per
-// the approved architecture. Status is displayed, not editable (Phase 12
-// is read-only — see CLAUDE.md).
+// by getOrderById() — no live Product lookup anywhere on this page.
+// Line items/pricing are never recalculated from current catalog data.
 export default async function AdminOrderDetailPage({ params }: OrderDetailPageProps) {
   const { id } = await params;
   const order = await getOrderById(id);
@@ -26,13 +31,20 @@ export default async function AdminOrderDetailPage({ params }: OrderDetailPagePr
         <Link href="/admin/orders">← Orders</Link>
       </p>
       <h1 className="admin-page-heading">
-        {order.orderNumber} <StatusBadge status={order.status} />
+        {order.orderNumber} <StatusBadge status={order.status} /> <StatusBadge status={order.paymentStatus} />
       </h1>
 
       <div className="admin-detail-grid">
         <div>
           <div className="admin-detail-block">
             <h2>Line items</h2>
+            {order.status === "draft" && (
+              <p className="admin-form-actions">
+                <Link href={`/admin/orders/${order.id}/edit`} className="admin-secondary-button">
+                  Edit Line Items
+                </Link>
+              </p>
+            )}
             {order.lines.map((line) => (
               <div className="admin-line-item" key={line.id}>
                 <p className="admin-line-item-title">
@@ -40,7 +52,9 @@ export default async function AdminOrderDetailPage({ params }: OrderDetailPagePr
                 </p>
                 <p className="admin-line-item-meta">
                   {line.productType} · {line.purchaseMode.replace("-", " ")}
+                  {line.productSlug ? ` · catalog: ${line.productSlug}` : " · custom item"}
                 </p>
+                {line.description && <p>{line.description}</p>}
                 {line.selectedPackage && (
                   <p className="admin-line-item-meta">Package: {line.selectedPackage.label}</p>
                 )}
@@ -68,12 +82,19 @@ export default async function AdminOrderDetailPage({ params }: OrderDetailPagePr
             ))}
           </div>
 
-          {order.notes && (
+          {order.customerMessage && (
             <div className="admin-detail-block">
-              <h2>Notes</h2>
-              <p>{order.notes}</p>
+              <h2>Customer message</h2>
+              <p className="admin-form-section-help">Submitted by the customer at checkout — not admin commentary.</p>
+              <p>{order.customerMessage}</p>
             </div>
           )}
+
+          <div className="admin-detail-block">
+            <h2>Internal notes</h2>
+            <NotesList notes={order.internalNotes} />
+            <NoteForm action={addOrderNoteAction.bind(null, order.id)} />
+          </div>
         </div>
 
         <div>
@@ -82,6 +103,10 @@ export default async function AdminOrderDetailPage({ params }: OrderDetailPagePr
             <div className="admin-detail-row">
               <span className="admin-detail-label">Order ID</span>
               <span>{order.id}</span>
+            </div>
+            <div className="admin-detail-row">
+              <span className="admin-detail-label">Source</span>
+              <span>{order.source}</span>
             </div>
             <div className="admin-detail-row">
               <span className="admin-detail-label">Created</span>
@@ -107,6 +132,19 @@ export default async function AdminOrderDetailPage({ params }: OrderDetailPagePr
                 <span>{formatMoney(order.pricingSummary.depositDue)}</span>
               </div>
             )}
+            {order.status !== "draft" && (
+              <p className="admin-form-section-help">Frozen historical snapshot — no longer editable.</p>
+            )}
+          </div>
+
+          <div className="admin-detail-block">
+            <h2>Work status</h2>
+            <OrderStatusForm id={order.id} currentStatus={order.status as OrderStatus} />
+          </div>
+
+          <div className="admin-detail-block">
+            <h2>Payment status</h2>
+            <OrderPaymentStatusForm id={order.id} currentStatus={order.paymentStatus as PaymentStatus} />
           </div>
 
           <div className="admin-detail-block">

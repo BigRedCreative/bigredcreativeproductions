@@ -1,8 +1,10 @@
 import "server-only";
 import { and, count, desc, eq, ilike, or, sql } from "drizzle-orm";
 import { getDb } from "@/db";
-import { customers, orders } from "@/db/schema";
+import { customers, leads, orders } from "@/db/schema";
 import { isValidUuid } from "@/server/is-uuid";
+import { getNotesForEntity } from "@/server/notes";
+import type { NoteWithAuthor } from "@/server/notes";
 
 export const CUSTOMERS_PAGE_SIZE = 25;
 
@@ -96,7 +98,10 @@ export type CustomerDetail = {
   phone: string | null;
   company: string | null;
   createdAt: Date;
+  updatedAt: Date;
   orders: Array<{ id: string; orderNumber: string; status: string; createdAt: Date; subtotal: number }>;
+  leads: Array<{ id: string; status: string; requestedService: string | null; createdAt: Date }>;
+  notes: NoteWithAuthor[];
 };
 
 export async function getCustomerCount(): Promise<number> {
@@ -115,6 +120,15 @@ export async function getCustomerById(id: string): Promise<CustomerDetail | null
   });
   if (!customer) return null;
 
+  const [linkedLeads, customerNotes] = await Promise.all([
+    db
+      .select({ id: leads.id, status: leads.status, requestedService: leads.requestedService, createdAt: leads.createdAt })
+      .from(leads)
+      .where(eq(leads.customerId, id))
+      .orderBy(desc(leads.createdAt)),
+    getNotesForEntity(db, "customer", id),
+  ]);
+
   return {
     id: customer.id,
     firstName: customer.firstName,
@@ -123,6 +137,7 @@ export async function getCustomerById(id: string): Promise<CustomerDetail | null
     phone: customer.phone,
     company: customer.company,
     createdAt: customer.createdAt,
+    updatedAt: customer.updatedAt,
     orders: customer.orders
       .slice()
       .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
@@ -133,5 +148,41 @@ export async function getCustomerById(id: string): Promise<CustomerDetail | null
         createdAt: order.createdAt,
         subtotal: order.pricingSummary.subtotal,
       })),
+    leads: linkedLeads,
+    notes: customerNotes,
   };
+}
+
+// Small helper for the "link existing customer" search on the lead detail
+// page — deliberately narrower than listCustomers() (no pagination, capped
+// result count) since it's meant for a quick inline pick, not a full list.
+export async function searchCustomers(query: string, limit = 5): Promise<CustomerListRow[]> {
+  const db = getDb();
+  const trimmed = query.trim();
+  if (!trimmed) return [];
+  const pattern = `%${trimmed}%`;
+
+  const rows = await db
+    .select({
+      id: customers.id,
+      firstName: customers.firstName,
+      lastName: customers.lastName,
+      email: customers.email,
+      company: customers.company,
+      phone: customers.phone,
+    })
+    .from(customers)
+    .where(or(ilike(customers.firstName, pattern), ilike(customers.lastName, pattern), ilike(customers.email, pattern), ilike(customers.company, pattern)))
+    .orderBy(desc(customers.createdAt))
+    .limit(limit);
+
+  return rows.map((row) => ({
+    id: row.id,
+    name: `${row.firstName} ${row.lastName}`.trim(),
+    email: row.email,
+    company: row.company,
+    phone: row.phone,
+    orderCount: 0,
+    lastOrderAt: null,
+  }));
 }

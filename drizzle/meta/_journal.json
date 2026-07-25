@@ -64,6 +64,20 @@
       "when": 1784910692764,
       "tag": "0008_minor_hiroim",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1784947214032,
+      "tag": "0009_kind_proteus",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1784950935021,
+      "tag": "0010_fantastic_mephistopheles",
+      "breakpoints": true
     }
   ]
 }

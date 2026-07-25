@@ -6,25 +6,28 @@ import AdminPagination from "@/components/admin/AdminPagination";
 import StatusBadge from "@/components/admin/StatusBadge";
 
 type OrdersPageProps = {
-  searchParams: Promise<{ page?: string; status?: string; q?: string }>;
+  searchParams: Promise<{ page?: string; status?: string; paymentStatus?: string; q?: string }>;
 };
 
 export default async function AdminOrdersPage({ searchParams }: OrdersPageProps) {
-  const { page: pageParam, status, q } = await searchParams;
+  const { page: pageParam, status, paymentStatus, q } = await searchParams;
   const page = Number(pageParam) > 0 ? Number(pageParam) : 1;
 
-  const { rows, totalCount, pageCount } = await listOrders({ page, status, search: q });
+  const { rows, totalCount, pageCount } = await listOrders({ page, status, paymentStatus, search: q });
 
   return (
     <div>
-      <h1 className="admin-page-heading">Orders</h1>
-      <OrdersFilterBar status={status} search={q} />
+      <div className="admin-page-heading-row">
+        <h1 className="admin-page-heading">Orders</h1>
+        <Link href="/admin/orders/new" className="admin-secondary-button">
+          New Order
+        </Link>
+      </div>
+      <OrdersFilterBar status={status} paymentStatus={paymentStatus} search={q} />
 
       {rows.length === 0 ? (
         <p className="admin-empty-state">
-          {totalCount === 0 && !status && !q
-            ? "No orders yet."
-            : "No orders match this search/filter."}
+          {totalCount === 0 && !status && !paymentStatus && !q ? "No orders yet." : "No orders match this search/filter."}
         </p>
       ) : (
         <>
@@ -34,9 +37,10 @@ export default async function AdminOrdersPage({ searchParams }: OrdersPageProps)
                 <tr>
                   <th>Order</th>
                   <th>Customer</th>
-                  <th>Status</th>
+                  <th>Work status</th>
+                  <th>Payment status</th>
+                  <th>Source</th>
                   <th>Subtotal</th>
-                  <th>Deposit</th>
                   <th>Created</th>
                 </tr>
               </thead>
@@ -57,17 +61,20 @@ export default async function AdminOrdersPage({ searchParams }: OrdersPageProps)
                       <StatusBadge status={row.status} />
                     </td>
                     <td>
+                      <StatusBadge status={row.paymentStatus} />
+                    </td>
+                    <td>{row.source}</td>
+                    <td>
                       {formatMoney(row.subtotal)}
                       {row.hasEstimatedPricing && <div className="admin-estimate-flag">Estimated</div>}
                     </td>
-                    <td>{row.depositDue > 0 ? formatMoney(row.depositDue) : "—"}</td>
                     <td>{row.createdAt.toLocaleDateString("en-US")}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
-          <AdminPagination page={page} pageCount={pageCount} baseHref="/admin/orders" baseParams={{ status, q }} />
+          <AdminPagination page={page} pageCount={pageCount} baseHref="/admin/orders" baseParams={{ status, paymentStatus, q }} />
         </>
       )}
     </div>

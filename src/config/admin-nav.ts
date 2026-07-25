@@ -9,6 +9,7 @@ export type AdminNavItem =
 
 export const adminNavItems: AdminNavItem[] = [
   { label: "Dashboard", href: "/admin", available: true },
+  { label: "Leads", href: "/admin/leads", available: true },
   { label: "Orders", href: "/admin/orders", available: true },
   { label: "Customers", href: "/admin/customers", available: true },
   { label: "Products", href: "/admin/products", available: true },

@@ -2,9 +2,11 @@ import "server-only";
 import { and, count, desc, eq, ilike, or } from "drizzle-orm";
 import { getDb } from "@/db";
 import { customers, orders } from "@/db/schema";
-import { ORDER_STATUSES } from "@/data/orders";
-import type { OrderStatus } from "@/data/orders";
+import { ORDER_STATUSES, PAYMENT_STATUSES } from "@/data/orders";
+import type { OrderStatus, PaymentStatus } from "@/data/orders";
 import { isValidUuid } from "@/server/is-uuid";
+import { getNotesForEntity } from "@/server/notes";
+import type { NoteWithAuthor } from "@/server/notes";
 
 // Server-only, never imported by a client component — matches the pattern
 // already established by src/server/create-order.ts etc. All admin order
@@ -16,6 +18,8 @@ export type OrderListRow = {
   id: string;
   orderNumber: string;
   status: string;
+  paymentStatus: string;
+  source: string;
   customerName: string;
   customerEmail: string;
   subtotal: number;
@@ -27,6 +31,7 @@ export type OrderListRow = {
 export type ListOrdersParams = {
   page?: number;
   status?: string;
+  paymentStatus?: string;
   search?: string;
 };
 
@@ -41,6 +46,10 @@ function isValidOrderStatus(value: string | undefined): value is OrderStatus {
   return !!value && (ORDER_STATUSES as readonly string[]).includes(value);
 }
 
+function isValidPaymentStatus(value: string | undefined): value is PaymentStatus {
+  return !!value && (PAYMENT_STATUSES as readonly string[]).includes(value);
+}
+
 // URL-driven filter/search/pagination (?page=&status=&q=) — offset-based
 // LIMIT/OFFSET, plain Postgres ILIKE search. Adequate at this business's
 // scale; see CLAUDE.md "Admin foundation" for why this beats a heavier
@@ -53,6 +62,9 @@ export async function listOrders(params: ListOrdersParams): Promise<ListOrdersRe
   const conditions = [];
   if (isValidOrderStatus(params.status)) {
     conditions.push(eq(orders.status, params.status));
+  }
+  if (isValidPaymentStatus(params.paymentStatus)) {
+    conditions.push(eq(orders.paymentStatus, params.paymentStatus));
   }
   const search = params.search?.trim();
   if (search) {
@@ -74,6 +86,8 @@ export async function listOrders(params: ListOrdersParams): Promise<ListOrdersRe
         id: orders.id,
         orderNumber: orders.orderNumber,
         status: orders.status,
+        paymentStatus: orders.paymentStatus,
+        source: orders.source,
         customerFirstName: customers.firstName,
         customerLastName: customers.lastName,
         customerEmail: customers.email,
@@ -100,6 +114,8 @@ export async function listOrders(params: ListOrdersParams): Promise<ListOrdersRe
       id: row.id,
       orderNumber: row.orderNumber,
       status: row.status,
+      paymentStatus: row.paymentStatus,
+      source: row.source,
       customerName: `${row.customerFirstName} ${row.customerLastName}`.trim(),
       customerEmail: row.customerEmail,
       subtotal: row.pricingSummary.subtotal,
@@ -117,9 +133,17 @@ export type OrderDetail = {
   id: string;
   orderNumber: string;
   status: string;
+  paymentStatus: string;
+  source: string;
   createdAt: Date;
   updatedAt: Date;
-  notes: string | null;
+  // The customer-submitted checkout message frozen at order-creation time
+  // — NOT admin commentary. Always null for a manual order (no customer
+  // ever submitted anything). Ongoing internal admin notes are the
+  // separate `internalNotes` field below, backed by the generic notes
+  // table — the two concepts never collide in one field.
+  customerMessage: string | null;
+  internalNotes: NoteWithAuthor[];
   pricingSummary: { subtotal: number; depositDue: number; hasEstimatedPricing: boolean };
   customer: {
     id: string;
@@ -131,7 +155,10 @@ export type OrderDetail = {
   };
   lines: Array<{
     id: string;
+    productId: string | null;
+    productSlug: string | null;
     productTitle: string;
+    description: string | null;
     productType: string;
     purchaseMode: string;
     quantity: number;
@@ -161,13 +188,18 @@ export async function getOrderById(id: string): Promise<OrderDetail | null> {
   });
   if (!order) return null;
 
+  const internalNotes = await getNotesForEntity(db, "order", id);
+
   return {
     id: order.id,
     orderNumber: order.orderNumber,
     status: order.status,
+    paymentStatus: order.paymentStatus,
+    source: order.source,
     createdAt: order.createdAt,
     updatedAt: order.updatedAt,
-    notes: order.notes,
+    customerMessage: order.notes,
+    internalNotes,
     pricingSummary: order.pricingSummary,
     customer: order.customer,
     lines: order.lines,
@@ -181,6 +213,17 @@ export async function getOrderStatusCounts(): Promise<Record<string, number>> {
   const result: Record<string, number> = {};
   for (const row of rows) {
     result[row.status] = row.value;
+  }
+  return result;
+}
+
+export async function getPaymentStatusCounts(): Promise<Record<string, number>> {
+  const db = getDb();
+  const rows = await db.select({ paymentStatus: orders.paymentStatus, value: count() }).from(orders).groupBy(orders.paymentStatus);
+
+  const result: Record<string, number> = {};
+  for (const row of rows) {
+    result[row.paymentStatus] = row.value;
   }
   return result;
 }
