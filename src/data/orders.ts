@@ -12,8 +12,61 @@ import type { ProductType, PurchaseMode } from "./products";
 // orderNumber, no payment/fulfillment statuses, and no server persistence
 // yet in this phase.
 
-export const ORDER_STATUSES = ["draft", "submitted", "needs-review", "confirmed", "cancelled"] as const;
+// Phase 18B — widened from the original 5-value checkout-only set to the
+// approved 8-value creative-project work lifecycle. buildOrderDraft() below
+// (the checkout path) only ever writes "needs-review" or "submitted" —
+// both remain valid members of this set, so this widening is not a
+// behavior change for checkout, only for the new admin-driven manual-order
+// lifecycle. See CLAUDE.md "Leads, Customers, and Orders Admin".
+export const ORDER_STATUSES = [
+  "draft",
+  "needs-review",
+  "submitted",
+  "approved",
+  "in-progress",
+  "awaiting-client",
+  "completed",
+  "cancelled",
+] as const;
 export type OrderStatus = (typeof ORDER_STATUSES)[number];
+
+// Explicit, fixed transition table — never an arbitrary status-to-status
+// jump. "completed" and "cancelled" are terminal (empty arrays). Enforced
+// server-side by isValidOrderStatusTransition() below; every admin status
+// change must go through it.
+export const ORDER_STATUS_TRANSITIONS: Record<OrderStatus, readonly OrderStatus[]> = {
+  draft: ["needs-review", "submitted", "cancelled"],
+  "needs-review": ["submitted", "cancelled"],
+  submitted: ["approved", "needs-review", "cancelled"],
+  approved: ["in-progress", "cancelled"],
+  "in-progress": ["awaiting-client", "completed", "cancelled"],
+  "awaiting-client": ["in-progress", "completed", "cancelled"],
+  completed: [],
+  cancelled: [],
+};
+
+export function isValidOrderStatusTransition(from: OrderStatus, to: OrderStatus): boolean {
+  if (from === to) return false;
+  return (ORDER_STATUS_TRANSITIONS[from] as readonly OrderStatus[]).includes(to);
+}
+
+// Payment status — a fully independent axis from work status (see
+// orders.paymentStatus in src/db/schema.ts). Tracking only: no Stripe, no
+// processor, no charge/refund API. "refunded" is terminal.
+export const PAYMENT_STATUSES = ["unpaid", "deposit-paid", "paid-in-full", "refunded"] as const;
+export type PaymentStatus = (typeof PAYMENT_STATUSES)[number];
+
+export const PAYMENT_STATUS_TRANSITIONS: Record<PaymentStatus, readonly PaymentStatus[]> = {
+  unpaid: ["deposit-paid", "paid-in-full"],
+  "deposit-paid": ["paid-in-full", "refunded"],
+  "paid-in-full": ["refunded"],
+  refunded: [],
+};
+
+export function isValidPaymentStatusTransition(from: PaymentStatus, to: PaymentStatus): boolean {
+  if (from === to) return false;
+  return (PAYMENT_STATUS_TRANSITIONS[from] as readonly PaymentStatus[]).includes(to);
+}
 
 export type OrderLine = {
   // Stable identity for this line within the order — crypto.randomUUID(),

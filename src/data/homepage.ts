@@ -80,6 +80,10 @@ export const contact = {
     namePlaceholder: "Name or company",
     emailLabel: "Email",
     emailPlaceholder: "you@company.com",
+    phoneLabel: "Phone (optional)",
+    phonePlaceholder: "(555) 555-5555",
+    companyLabel: "Company (optional)",
+    companyPlaceholder: "Company or brand name",
     serviceLabel: "Service",
     servicePlaceholder: "Select a service",
     serviceOptions: [
@@ -94,6 +98,12 @@ export const contact = {
     detailsLabel: "Project details",
     detailsPlaceholder: "Tell us about the vision, timing and budget.",
     submitLabel: "Send the vision ↗",
+    // Phase 18A — honest post-submission copy. Never claims "email sent" —
+    // the real, true fact is that the message was received and saved.
+    successMessage: "Thanks — your message has been received. We'll get back to you soon.",
+    genericErrorMessage: "Something went wrong on our end. Please try again, or email us directly below.",
+    cooldownMessage: "Looks like we already got a message from you recently — we'll be in touch soon!",
+    fallbackLabel: "Prefer email? You can reach us directly at",
   },
 };
 

@@ -15,7 +15,12 @@ export default async function AdminCustomersPage({ searchParams }: CustomersPage
 
   return (
     <div>
-      <h1 className="admin-page-heading">Customers</h1>
+      <div className="admin-page-heading-row">
+        <h1 className="admin-page-heading">Customers</h1>
+        <Link href="/admin/customers/new" className="admin-secondary-button">
+          New Customer
+        </Link>
+      </div>
       <CustomersFilterBar search={q} />
 
       {rows.length === 0 ? (

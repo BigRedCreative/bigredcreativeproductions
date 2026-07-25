@@ -414,6 +414,46 @@
   color: #157a3d;
 }
 
+/* Phase 18B — order work-status lifecycle (approved/completed reuse the
+   same "good progress" green already used for confirmed/published/active;
+   awaiting-client reuses the "needs attention" red already used for
+   needs-review, since it's the same kind of external-blocker state). */
+.admin-badge-approved {
+  color: #157a3d;
+}
+
+.admin-badge-in-progress {
+  color: var(--black);
+}
+
+.admin-badge-awaiting-client {
+  color: var(--red);
+}
+
+.admin-badge-completed {
+  color: #157a3d;
+}
+
+/* Phase 18B — payment-status tracking (unpaid reuses the same "needs
+   attention" red; refunded is terminal, matching cancelled/archived's
+   gray+line-through treatment). */
+.admin-badge-unpaid {
+  color: var(--red);
+}
+
+.admin-badge-deposit-paid {
+  color: var(--black);
+}
+
+.admin-badge-paid-in-full {
+  color: #157a3d;
+}
+
+.admin-badge-refunded {
+  color: var(--gray);
+  text-decoration: line-through;
+}
+
 .admin-estimate-flag {
   font-size: 10px;
   text-transform: uppercase;

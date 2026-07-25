@@ -1,5 +1,6 @@
 import {
   boolean,
+  index,
   integer,
   jsonb,
   pgSequence,
@@ -168,21 +169,51 @@ export const customers = pgTable(
 // orders, not application-level "check then insert" logic (which is
 // race-prone under real concurrency — see create-order.ts).
 // ---------------------------------------------------------------------
+// Phase 18 — `status` (the work/project lifecycle) gets a wider approved
+// value set: draft | needs-review | submitted | approved | in-progress |
+// awaiting-client | completed | cancelled — deliberately separate from
+// paymentStatus below, since "is the creative work done" and "did we get
+// paid" are independent axes that must never be collapsed into one
+// column. "draft" now has a genuine purpose beyond the checkout flow's
+// own (mostly theoretical) use of it: a manual/admin-created order the
+// admin is still assembling, not yet finalized. Zero real orders existed
+// when this list was approved, so this was a clean-slate redesign, not a
+// breaking migration against real data. The actual TS-level
+// ORDER_STATUSES/OrderStatus export in src/data/orders.ts is updated to
+// match in the follow-up UI-building step, not this schema step — this
+// column stays plain `text` either way (matching every other status
+// column in this schema, e.g. products.status), so widening the allowed
+// values has zero SQL/migration impact. See CLAUDE.md "Leads, Customers,
+// and Orders Admin".
+//
+// paymentStatus is new this phase: unpaid | deposit-paid | paid-in-full |
+// refunded — purely admin-set for now, no Stripe, no real charge object.
+// Still genuinely useful today: a manual order taken by phone/Instagram
+// still needs "did I actually get paid" tracked regardless of channel.
+// Its own PaymentStatus TS type/const also lands in src/data/orders.ts in
+// the UI-building step, alongside the updated ORDER_STATUSES.
 export const orders = pgTable(
   "orders",
   {
     id: uuid("id").primaryKey().defaultRandom(),
     orderNumber: text("order_number").notNull(),
-    // "draft" | "submitted" | "needs-review" | "confirmed" | "cancelled" —
-    // deliberately no paid/fulfilled/refunded states yet, see CLAUDE.md.
     status: text("status").notNull(),
+    // Defaults to 'unpaid', matching every order's real starting state
+    // until an admin manually marks it otherwise.
+    paymentStatus: text("payment_status").notNull().default("unpaid"),
     customerId: uuid("customer_id")
       .notNull()
       .references(() => customers.id),
     pricingSummary: jsonb("pricing_summary").notNull().$type<OrderPricingSummary>(),
+    // The customer-submitted context frozen at order-creation time (from
+    // checkout) — NOT admin commentary. Ongoing internal admin notes live
+    // in the separate `notes` table below instead, so the two concepts
+    // (a customer's original message vs. an admin's running commentary)
+    // never collide in one column.
     notes: text("notes"),
-    // Free-form context, e.g. "checkout" today; room for "admin-created"
-    // later without a schema change.
+    // Free-form context, e.g. "checkout" today; "manual" for Phase 18's
+    // admin-created orders — already free text, no schema change needed
+    // for that.
     source: text("source").notNull().default("checkout"),
     clientRequestId: text("client_request_id").notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
@@ -219,8 +250,23 @@ export const orderLines = pgTable("order_lines", {
     .notNull()
     .references(() => orders.id, { onDelete: "cascade" }),
   productId: text("product_id").references(() => products.id, { onDelete: "set null" }),
-  productSlug: text("product_slug").notNull(),
+  // Phase 18 — nullable, matching productId's existing nullable precedent.
+  // A manual/custom line item (Admin → Orders → New, no real catalog
+  // product involved) has no meaningful slug — leaving it null is the
+  // honest choice over synthesizing a fake one. productTitle stays
+  // required either way — the short line-item name (e.g. "Custom Packaging
+  // Design"), whether it came from a catalog product or was typed by hand.
+  productSlug: text("product_slug"),
   productTitle: text("product_title").notNull(),
+  // Phase 18B — nullable. The optional longer scope/description for a line
+  // item (e.g. "Front/back pouch design, print-ready production files, 2
+  // revision rounds, and final CMYK exports"), deliberately kept separate
+  // from productTitle rather than overloading one field with both a short
+  // name and a paragraph of scope. Always null for every existing
+  // checkout-created order line — create-order.ts never sets this column,
+  // so nothing about the checkout path changes. Only admin-created manual
+  // order lines populate it, and only when the admin actually writes one.
+  description: text("description"),
   productType: text("product_type").notNull(),
   purchaseMode: text("purchase_mode").notNull(),
   quantity: integer("quantity").notNull(),
@@ -680,4 +726,102 @@ export const portfolioProjectsRelations = relations(portfolioProjects, ({ many }
 
 export const portfolioProjectVersionsRelations = relations(portfolioProjectVersions, ({ one }) => ({
   project: one(portfolioProjects, { fields: [portfolioProjectVersions.projectId], references: [portfolioProjects.id] }),
+}));
+
+// ---------------------------------------------------------------------
+// Phase 18 — Leads, Customers, and Orders Admin. `leads` is operational
+// business data, not published content — it deliberately does NOT use the
+// Phase 17 staged draft/publish model (nothing about a lead is ever
+// "public"), and deliberately does NOT use the prod_/service_/project_
+// text-id convention those content-entity tables use. It uses a plain
+// uuid, matching customers/orders/order_lines/admin_users — the "business
+// record" family, not the "public content entity" family.
+//
+// No unique constraint on email, unlike customers — a lead represents one
+// discrete inquiry event; the same person submitting a second genuine
+// inquiry later is a new, separately trackable record, not a duplicate to
+// collapse away.
+//
+// Archival is deliberately ORTHOGONAL to the funnel status (new/contacted/
+// qualified/won/lost) rather than a 6th status value — a nullable
+// archivedAt timestamp instead of an 'archived' status, per approval. A
+// lead can be archived from any funnel stage without losing what stage it
+// was actually in; "is this archived" and "what stage is it at" are two
+// independent questions, the exact same reasoning already applied to
+// orders.status vs. orders.paymentStatus above.
+//
+// customerId is nullable and set only by an explicit admin action
+// (Convert to customer / Link to existing customer) — never automatically,
+// and never as a side effect of a status change reaching "won". See
+// CLAUDE.md "Leads, Customers, and Orders Admin".
+// ---------------------------------------------------------------------
+export const leads = pgTable(
+  "leads",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    name: text("name").notNull(),
+    // Always stored normalized (trim + lowercase), same convention as
+    // customers.email — but NOT unique, see above.
+    email: text("email").notNull(),
+    phone: text("phone"),
+    company: text("company"),
+    // Frozen copy of whatever was selected in the contact form's service
+    // dropdown at submission time — free text, NOT a foreign key to that
+    // (code-owned, editable) options list. A lead's historical request
+    // must never be silently reinterpreted by a later copy edit, the same
+    // "frozen snapshot" principle order_lines already uses for products.
+    requestedService: text("requested_service"),
+    message: text("message").notNull(),
+    // Free text, room for 'phone' | 'instagram' | 'manual' etc. later
+    // with no schema change — mirrors orders.source exactly.
+    source: text("source").notNull().default("website-contact-form"),
+    // 'new' | 'contacted' | 'qualified' | 'won' | 'lost'
+    status: text("status").notNull().default("new"),
+    // Orthogonal to status — see the table comment above.
+    archivedAt: timestamp("archived_at", { withTimezone: true }),
+    customerId: uuid("customer_id").references(() => customers.id, { onDelete: "set null" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("leads_status_idx").on(table.status), index("leads_customer_id_idx").on(table.customerId)],
+);
+
+export const leadsRelations = relations(leads, ({ one }) => ({
+  customer: one(customers, { fields: [leads.customerId], references: [customers.id] }),
+}));
+
+// ---------------------------------------------------------------------
+// Notes — one small, generic, append-only table shared by leads,
+// customers, and orders, reusing the exact entityType/entityId polymorphic
+// pattern audit_log already established in this codebase, rather than
+// building three near-identical *_notes tables. Append-only: no
+// updatedAt, no edit/delete path — a wrong note gets corrected by adding
+// a new note, not by rewriting history, the same immutable-record
+// philosophy audit_log already uses. adminUserId (nullable, ON DELETE SET
+// NULL) records who wrote it, matching audit_log.adminUserId exactly.
+//
+// The tradeoff, documented honestly: entityId is not a real foreign key
+// (it can't be — it points at three different tables depending on
+// entityType), so referential integrity here is an application-level
+// guarantee, not a database-enforced one — identical to the tradeoff
+// audit_log already accepts today.
+// ---------------------------------------------------------------------
+export const NOTE_ENTITY_TYPES = ["lead", "customer", "order"] as const;
+export type NoteEntityType = (typeof NOTE_ENTITY_TYPES)[number];
+
+export const notes = pgTable(
+  "notes",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    entityType: text("entity_type").notNull(),
+    entityId: text("entity_id").notNull(),
+    adminUserId: uuid("admin_user_id").references(() => adminUsers.id, { onDelete: "set null" }),
+    body: text("body").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("notes_entity_idx").on(table.entityType, table.entityId)],
+);
+
+export const notesRelations = relations(notes, ({ one }) => ({
+  adminUser: one(adminUsers, { fields: [notes.adminUserId], references: [adminUsers.id] }),
 }));

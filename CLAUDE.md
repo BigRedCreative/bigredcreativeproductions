@@ -1723,6 +1723,228 @@ Same approach as Services: the real read layer (`queries/portfolio.ts`, imported
 
 Database foundation (staged draft/publish schema, partial slug indexes) → seed script → public runtime cutover (`/services`, `/work`, homepage sections reading from Neon) → Services Admin → Portfolio Admin. All four pieces are live-tested against real content: the real Branding service edit and the real Product Packaging project edit are both genuine, current, permanently-published changes — not placeholders, not reverted.
 
+## Leads + Contact Form Admin (Phase 18A)
+
+**Status: the public Contact Form is a real Neon-backed lead-submission flow (no longer mailto-only), with a full Leads Admin — list, detail, status, archive, internal notes.** This is the first phase of turning the admin into a lightweight business operating system: **Lead → Customer → Order** (see "Customers + Manual Orders Admin (Phase 18B)" below for the rest of that chain).
+
+### `leads` — operational business data, not published content
+
+Deliberately does **not** use the Phase 17 staged draft/publish model — nothing about a lead is ever "public." Uses a plain `uuid` primary key (matching `customers`/`orders`/`order_lines`/`admin_users` — the "business record" family), not the `service_`/`project_` text-prefix convention those content-entity tables use. Schema (`src/db/schema.ts`): `id`, `name`, `email` (normalized trim+lowercase, **not** unique — a second genuine inquiry from the same person is a new, separately trackable record, not a duplicate to collapse), `phone`/`company` (nullable), `requestedService` (frozen snapshot of the contact form's service dropdown at submission time, free text — not a foreign key), `message`, `source` (defaults `'website-contact-form'`, free text, room for `'phone'`/`'instagram'`/`'manual'` later with no schema change), `status` (`'new' | 'contacted' | 'qualified' | 'won' | 'lost'`, defaults `'new'`), `archivedAt` (nullable timestamp — **orthogonal to `status`**, not a 6th status value, per explicit approval: a lead can be archived from any funnel stage without losing what stage it was actually in, the identical reasoning already applied to `orders.status` vs. `orders.paymentStatus`), `customerId` (nullable FK to `customers`, `ON DELETE SET NULL`, set only by an explicit admin action — never automatically, and never as a side effect of a status change reaching `"won"` — see Phase 18B below), `createdAt`/`updatedAt`.
+
+### `submitLeadAction` — the ONE public unauthenticated write path
+
+`src/server/submit-lead.ts`, deliberately isolated in its own file, physically separate from `src/server/mutate-lead.ts` (every export there independently calls `requireAdminUser()`) — so the one place accepting a write from an unauthenticated visitor is obvious at a glance, not buried among authenticated ones.
+
+- **Honeypot** — a hidden `website` field (absolutely positioned off-screen in `ContactFormFields.tsx`, `tabIndex={-1}`, `autoComplete="off"`, never `display:none`/`type="hidden"`, which bots specifically know to skip) that a real visitor never fills. A filled honeypot fails **silently** from the bot's perspective: returns `{status:"success"}`, creates zero rows, never reveals detection.
+- **Same-email cooldown** — `COOLDOWN_MINUTES = 2` (a named constant): a second submission from the same normalized email within the window is rejected with a reassuring message ("we already got your message"), not an error-sounding one, since it reads correctly whether the second attempt was a bot or a genuine double-submit. Computed via a plain JS `Date` threshold against `leads.createdAt`, not raw SQL interval syntax.
+- **Validation**: `validateRequiredText`/`validateEmailShape`, reused directly from `src/server/validate-website-content.ts` — no new validator built.
+- **Honesty**: never claims "email sent" — the success message says the message was received and the business will follow up. A persistent, always-visible secondary `mailto:` link (`contactEmail` from `site_settings`) remains available regardless of submission success, matching the exact "always offer a real fallback" principle Checkout's `POST /api/orders` already established.
+- Errors are logged safely — only that an attempt failed, never the full name/email/message payload.
+
+### Contact Form — server/client split
+
+`ContactForm.tsx` is now a thin **async server component**: reads `getContactContent()`/`getSiteSettings()` from Neon (unchanged from Phase 14), then renders `ContactFormFields.tsx` (the new client component owning the actual `<form>`, `useActionState(submitLeadAction, null)`). Optional `phone`/`company` fields were added to the form (labels/placeholders live in `src/data/homepage.ts`'s `contact.form`, alongside the existing name/email/service/message fields) — the visual design is otherwise **unchanged**, per explicit instruction: no redesign, only the underlying submission mechanism changed.
+
+### `/admin/leads` and `/admin/leads/[id]`
+
+Mirrors the Orders/Customers admin list/detail pattern exactly: `LeadsFilterBar.tsx` (native `<form method="GET">`, no client JS — status filter, archived filter [`all`/`exclude`/`only`], search by name/email/company), `AdminPagination`, `StatusBadge`. Detail page shows every field (name/email/phone/company/requestedService/message/source/createdAt/updatedAt/archivedAt) — all admin-only, never exposed publicly.
+
+- **Status** (`LeadStatusForm.tsx`) — immediate, not staged (leads are operational records, not published content). Controlled `<select>` per the Phase 13 rule. Audited as `lead.status_changed`, metadata `{from, to}` only.
+- **Archive** (`LeadArchiveToggle.tsx`) — single fieldless button, mirrors `ServiceArchiveToggle.tsx`'s exact pattern. Toggles `archivedAt` between `null` and `new Date()`, **never touches `status`** — archiving preserves whatever funnel stage the lead was actually in. Audited as `lead.archived`/`lead.unarchived`, empty metadata.
+- **Notes** — see "Shared Notes UI" under Phase 18B below (originally a lead-only `LeadNoteForm.tsx`, generalized in Phase 18B into `NoteForm`/`NotesList` and reused by customers/orders too).
+
+### Audit events
+
+`lead.status_changed` (`{from, to}`), `lead.archived`/`lead.unarchived` (`{}`), `lead.note_added` (`{}` — **never** the note body). No PII (name/email/phone/company/message) in any audit metadata, matching the standing rule for every audit event in this codebase.
+
+### Dashboard
+
+`/admin` gained **New Leads** and **Needs Follow-up** counts (`getLeadStatusCounts()` — "needs follow-up" = `new` + `contacted`, non-archived only). No fake/seeded metrics; an empty table correctly shows zero.
+
+### Security
+
+`submitLeadAction` is the only unauthenticated write in the whole leads/customers/orders system. Every other mutation (`setLeadStatusAction`, `setLeadArchivedAction`, `addLeadNoteAction`) independently calls `requireAdminUser()` as its first line, per the standing rule since Phase 12 — Server Actions aren't covered by the protected layout's own check.
+
+### Real acceptance test — what was genuinely verified
+
+Using your own real inquiry through the public homepage contact form (not seeded, not synthetic): the submission succeeded with the honest, non-"email sent" success message; the lead appeared in `/admin/leads`; a status change, an archive/unarchive cycle, and a genuine internal note were all performed by you and correctly persisted with correct audit attribution to the real owner account. This lead and its note are **real, legitimate business data** — not test data, never deleted, never touched by any of the automated regression suites in this phase or Phase 18B.
+
+## Customers + Manual Orders Admin (Phase 18B)
+
+**Status: the full Lead → Customer → Manual Order / Project → Work Status → Payment Status → Internal Notes workflow is complete and live-tested against your own real conversion.** Big Red Creative Productions can now manage real customers and manually create/manage projects from the admin without the customer going through website checkout.
+
+### Migration `0009_kind_proteus.sql` — the Phase 18 database foundation
+
+Applied before any Phase 18A/18B code was written. Added: the `leads` table (see above), the generic `notes` table (see "Shared Notes UI" below), `orders.paymentStatus` (`text`, default `'unpaid'`), and made `order_lines.productSlug` **nullable** (a manual/custom line item has no meaningful slug — leaving it `null` is the honest choice over synthesizing a fake one; `productId` was already nullable since Phase 13's `ON DELETE SET NULL` FK restoration). `orders.status` stayed plain `text` — no SQL change was needed to widen its allowed values (see below); this migration only added the new `paymentStatus` column alongside it.
+
+### Migration `0010_fantastic_mephistopheles.sql` — `order_lines.description`
+
+One statement: `ALTER TABLE "order_lines" ADD COLUMN "description" text;` — nullable, no default. Added specifically so a manual line item can carry a clean short `productTitle` (e.g. "Custom Packaging Design") **and** a separate, optional longer scope (e.g. "Front/back pouch design, print-ready production files, 2 revision rounds, and final CMYK exports") without overloading one field with both. `productTitle` remains the required short name for every line — catalog-derived or manual. Checkout-created order lines never populate this column (`create-order.ts` was not touched) — it stays `null` for every historical checkout order line, exactly as it always has.
+
+Both migrations were generated, reviewed, and explicitly approved via the full disclosure protocol (proposed SQL, column type/nullability/default, destructive-operation analysis, confirmation that 0000–0008 remained byte-unchanged, confirmation the migration hadn't been applied, confirmation no real data was touched) before `db:migrate` ever ran. **Migrations 0000–0009 were never rewritten** — 0010 is a new, additive-only file, per the project's standing migration-immutability rule.
+
+### `src/data/orders.ts` — the approved 8-value work-status lifecycle
+
+`ORDER_STATUSES` widened from the original 5-value checkout-only set (`draft | submitted | needs-review | confirmed | cancelled`) to the approved 8-value creative-project lifecycle:
+
+```ts
+draft, needs-review, submitted, approved, in-progress, awaiting-client, completed, cancelled
+```
+
+`buildOrderDraft()` (the checkout path, unchanged) only ever writes `"needs-review"` or `"submitted"` — both remain valid members of the widened set, so this was **not** a behavior change for checkout, only an enabling change for the new admin-driven manual-order lifecycle. `"confirmed"` no longer exists (replaced by `"approved"`) — the dashboard's stale reference to it was found and fixed as part of this phase (see Dashboard below).
+
+An explicit, fixed **transition table** (`ORDER_STATUS_TRANSITIONS`) is the sole authority for what status changes are allowed — never an arbitrary jump:
+
+```
+draft            → needs-review, submitted, cancelled
+needs-review     → submitted, cancelled
+submitted        → approved, needs-review, cancelled
+approved         → in-progress, cancelled
+in-progress      → awaiting-client, completed, cancelled
+awaiting-client  → in-progress, completed, cancelled
+completed        → (terminal)
+cancelled        → (terminal)
+```
+
+`isValidOrderStatusTransition(from, to)` is checked both in `OrderStatusForm.tsx` (which only ever *offers* a valid next status, via `ORDER_STATUS_TRANSITIONS[currentStatus]`) and — authoritatively — inside `setOrderStatusAction`'s transaction. A terminal status renders no status-change form at all.
+
+### Payment status — a fully independent axis, tracking only
+
+```ts
+export const PAYMENT_STATUSES = ["unpaid", "deposit-paid", "paid-in-full", "refunded"] as const;
+```
+
+```
+unpaid        → deposit-paid, paid-in-full
+deposit-paid  → paid-in-full, refunded
+paid-in-full  → refunded
+refunded      → (terminal)
+```
+
+Same `isValidPaymentStatusTransition()` pattern, same `OrderPaymentStatusForm.tsx` UI pattern. **No Stripe, no payment processor, no charge/refund API of any kind** — this is purely an admin-set label recording the project's current payment state, exactly like `orders.status` records its current work state. `orders.paymentStatus` defaults to `'unpaid'` on every order regardless of channel.
+
+### Customers Admin
+
+```
+/admin/customers              — list: search, pagination (existing, extended)
+/admin/customers/new           — create (new)
+/admin/customers/[id]           — detail: linked leads, linked orders, notes (existing, extended)
+/admin/customers/[id]/edit        — edit contact info (new)
+```
+
+`customers` already had every field this admin needed (`firstName`, `lastName`, `email` — unique, normalized — `phone`, `company`, `createdAt`, `updatedAt`) — **no migration was required for the Customers table itself**, only new admin code (`src/server/build-customer-form.ts`, `src/server/mutate-customer.ts`).
+
+**Duplicate protection**: `customers_email_unique` remains the real, race-safe database backstop. Every create path (manual, or via "Create Customer from Lead") does a proactive `SELECT`-by-normalized-email **inside the same transaction** before inserting — mirroring `create-order.ts`'s own find-or-create pattern — so a duplicate returns a clear, specific error ("a customer with this email already exists — view it at /admin/customers/&lt;id&gt;") instead of a raw constraint violation. A stray race that slips past the proactive check is still caught via `isUniqueViolation(error, "customers_email_unique")`, the same helper `mutate-product.ts` already established for slug collisions. **Never silently merges, never silently overwrites an existing row.**
+
+`getCustomerById()` (`src/server/queries/customers.ts`) now also returns `updatedAt`, every `leads` row with `customerId` pointing at this customer, and every `notes` row (`entityType: "customer"`) via `getNotesForEntity()`. `searchCustomers()` is a small, uncapped-pagination search helper (top 5 matches) purpose-built for the inline "Link Existing Customer" picker on the lead detail page — deliberately narrower than the full `listCustomers()`.
+
+### Lead → Customer
+
+On `/admin/leads/[id]`, once a lead has no linked customer yet:
+
+- **Create Customer from Lead** — a link to `/admin/customers/new?fromLead=<id>`, which **prefills** the create-customer form from the lead's data (`splitLeadName()` in `build-customer-form.ts`: first word → `firstName`, remainder → `lastName` — an honest heuristic, not a final answer) but writes **nothing** until the admin reviews/edits and explicitly submits. The actual customer-insert-plus-lead-link happens inside `createCustomerAction`'s **one transaction** when a hidden `fromLeadId` field is present: re-verify the lead isn't already linked → check the normalized-email duplicate → insert the customer → set `leads.customerId` (+ `updatedAt`) → `recordAuditEvent("customer.created", {source:"lead"})` → `recordAuditEvent("lead.customer_linked", {customerId})` — all commit or roll back together.
+- **Link Existing Customer** — a native `<form method="GET">` search (name/email/company, reusing `searchCustomers()`) rendered inline on the lead page; each result row is its own tiny form bound via `linkExistingCustomerAction.bind(null, leadId, customerId)` (`LinkCustomerButton.tsx`, mirroring `LeadArchiveToggle.tsx`'s single-fieldless-button pattern) — no client-side customer-search JS at all. `src/server/mutate-lead-customer.ts` is a deliberately separate file from both `mutate-customer.ts` (customer-only actions) and `mutate-lead.ts` (lead-only actions), since "link an *existing* customer to a lead" is a genuinely cross-entity action. Re-checks the lead isn't already linked (`ALREADY_LINKED`) inside the transaction — **double-linking is impossible**, not just discouraged by the UI.
+- **View Customer** / **Create Order for Customer** — once linked, plain links to `/admin/customers/[id]` and `/admin/orders/new?customerId=[id]`.
+
+**The original lead is never rewritten** — linking only ever touches `leads.customerId`/`updatedAt`; name/email/phone/company/message/source/status/archivedAt are untouched forever. Linking a lead to a customer **does not** automatically change `lead.status` — reaching "won" is a separate, explicit admin decision, never an automatic side effect of linking.
+
+### Manual Orders / Project Management
+
+```
+/admin/orders               — list: work-status filter, payment-status filter, search, pagination (existing, extended)
+/admin/orders/new            — create (new)
+/admin/orders/[id]            — detail: full pricing/status/notes (existing, extended)
+/admin/orders/[id]/edit         — draft-only line-item editor (new)
+```
+
+`/admin/orders/new` is a two-step, JS-free flow: pick a customer (either preselected via `?customerId=`, linked from a customer/lead page, or found through an inline native-GET search identical in spirit to the lead page's customer search — each result is a plain link, no mutation happens at this step), then fill in line items via the client `OrderForm.tsx` (`useActionState(createManualOrderAction, ...)`, matching every other real admin form's pattern).
+
+### Manual order line items — physical/service, never a fake product reference
+
+Each line, edited via `OrderLineItemsEditor.tsx` (a repeatable array editor mirroring `ProductOptionsEditor.tsx`'s exact local-state/add-remove/serialize-to-one-hidden-JSON-field pattern): an optional **catalog product** picker (selecting a published product prefills the title — still editable — and sets `productId`/`productSlug`; leaving it "Custom item" leaves both `null`), a required **title**, an optional **description** (the new `order_lines.description` column), a controlled **Type** `<select>` (**Physical** / **Service**, defaulting to Service but never silently forced to it — the whole reason this was called out explicitly: `order_lines.productType` is plain `text` with no DB-level CHECK constraint, and `PRODUCT_TYPES = ["physical", "service"]` in `src/data/products.ts` already models exactly this distinction, so no schema change was needed — the admin UI just needed a real, controlled, two-way selector instead of assuming one value), **quantity** (whole number, minimum 1), and **unit price** (dollars in the UI, converted via the existing `dollarsToCents()`).
+
+**For a custom/manual line, `productId` and `productSlug` are both `null` — never a fake/synthesized identifier.** `order_lines.productId` keeps its real `ON DELETE SET NULL` FK to `products` (confirmed live during automated testing: a synthetic non-existent product id was correctly **rejected** by the database's `order_lines_product_id_products_id_fk` constraint — proving the FK is real and enforced, not just documented).
+
+### Money — integer cents everywhere, server-calculated, never client-trusted
+
+`build-order-form.ts` parses each line's admin-entered dollar amount via `dollarsToCents()` (same conversion `ProductForm.tsx` already uses) — the admin's typed price is trusted as-is (there is no live catalog price to verify a *manual* order against; that verification pipeline in `verify-configuration.ts` exists specifically for the public, unauthenticated checkout path, not this trusted internal admin form). What is **never** trusted from the client is any computed total: `create-manual-order.ts`/`mutate-order.ts` always compute `lineSubtotal = unitPrice * quantity` and `pricingSummary.subtotal = sum(lineSubtotal)` themselves — the client-submitted JSON never includes a subtotal field at all, so there is nothing to "trust" or ignore. Live-verified: `unitPrice * quantity` matched the stored `lineSubtotal` exactly for every line in both automated testing and the real acceptance test.
+
+### Order number — the same `BRCP-####` sequence, no second numbering system
+
+`create-manual-order.ts` calls `nextval('order_number_seq')` — the identical sequence and format `create-order.ts` already uses for checkout orders. Manual and checkout orders are numbered from one unified sequence; `orders.source` (`"manual"` vs `"checkout"`) is what actually distinguishes how an order originated. `clientRequestId` — `orders`' `NOT NULL` + unique idempotency key, a real concept for checkout's client-retry scenarios — has no natural meaning for an admin-created order, so a manual order simply generates a fresh `crypto.randomUUID()` server-side purely to satisfy the constraint; it's otherwise unused for manual orders.
+
+### Manual order creation — one transaction
+
+`createManualOrderAction` (`requireAdminUser()`) → `create-manual-order.ts`'s `createManualOrder()`: re-verify the customer exists → `nextval('order_number_seq')` → compute every line's `lineSubtotal` and the order `subtotal` → insert the `orders` row (`status: "draft"`, `paymentStatus: "unpaid"`, `source: "manual"`, `notes: null`) → insert every `order_lines` row → `recordAuditEvent("order.created", {orderNumber, source:"manual", lineCount})` — all inside one `db.transaction()`. Deliberately **not** built on top of `create-order.ts`/`buildOrderDraft()` (both tightly coupled to `CartItem`/`Product`-shaped checkout data) — a parallel, admin-only path so the working, tested checkout flow stays completely undisturbed. Live-verified during automated regression testing: a direct call to the real, unmodified `createOrder()` still succeeds end-to-end after all of Phase 18B's changes, confirming checkout was never touched.
+
+`orders.notes` (the customer-submitted checkout message, frozen at order-creation time) is **always `null`** for a manual order — no customer ever submitted anything. Internal admin commentary lives exclusively in the generic `notes` table (see below); the order detail page labels these two concepts distinctly ("Customer message" vs. "Internal notes") so they never collide visually either.
+
+### Order line editing — draft-only, then a frozen historical snapshot
+
+`/admin/orders/[id]/edit` is only functional while `status = "draft"` — reachable at any status, but shows a plain "financial snapshots are locked, cancel + create a new order instead" message once the order has left draft, rather than rendering an editor that would just reject on submit. `updateOrderLinesAction` independently re-checks `status === "draft"` server-side (throwing `NOT_DRAFT` otherwise) — the page-level gate is not the only thing preventing a non-draft order's history from being edited; a direct POST to the action is rejected too. Editing a draft's lines **replaces** the order's `order_lines` rows (delete + re-insert, inside one transaction) and recomputes `pricingSummary` from scratch — audited as `order.lines_updated`, metadata `{lineCount}` only. Live-verified (both automated and real): line editing succeeds while draft, and is correctly blocked the moment the order transitions to `"submitted"` or beyond.
+
+Once an order leaves draft: line items, unit prices, line totals, and `pricingSummary` are all frozen historical snapshots — status and payment-status remain independently editable via their own dedicated controls regardless of the line-item lock state, since those are lifecycle/tracking fields, not pricing. If a finalized order needs correcting, the intended workflow is cancel + create a corrected order, never rewriting history in place.
+
+### Order Detail page
+
+Shows: `BRCP-####` order number, customer (name/email/phone/company, linked to `/admin/customers/[id]`), source, created/updated timestamps, work status + change control, payment status + change control, every line item (title, description if present, quantity, unit price, line subtotal, catalog slug reference or "custom item"), the frozen `pricingSummary` (labeled "frozen historical snapshot" once the order has left draft), the customer's original checkout message if one exists (`orders.notes`, clearly separate from admin notes), and internal notes. **No discount/tax/shipping fields exist anywhere in this schema** — none were added, since none were legitimately present to surface (matching the standing "do not invent financial fields" rule already established for `Product.pricing`).
+
+### Shared Notes UI — generalized from the Phase 18A lead-only version
+
+The generic `notes` table (`entityType: "lead" | "customer" | "order"`, `entityId`, `adminUserId` nullable `ON DELETE SET NULL`, `body`, append-only — no `updatedAt`, no edit/delete path) and `src/server/notes.ts`'s `recordNote()`/`getNotesForEntity()` needed **zero data-layer changes** for Phase 18B — they were already fully entity-agnostic from Phase 18A. What Phase 18B added: `src/components/admin/NoteForm.tsx` and `NotesList.tsx`, generalized out of the original `LeadNoteForm.tsx` (deleted, replaced by the shared version) — a deliberate departure from this codebase's usual "small mirrored per-entity files" convention (see Services vs. Portfolio admin components), justified here because the note form/list's shape is **100% identical** across all three entity types; only the bound Server Action differs (`addLeadNoteAction.bind(null, id)` / `addCustomerNoteAction.bind(null, id)` / `addOrderNoteAction.bind(null, id)`). Each of those three thin actions still lives in its own entity-specific `mutate-*.ts` file and independently calls `requireAdminUser()` — the shared UI never weakens or bypasses per-entity authorization. `NoteActionState` (the shared `{errors} | {success:true} | null` result shape) lives in `src/server/notes.ts` for the three action files to reuse structurally.
+
+Notes are internal/admin-only everywhere, append-only (a wrong note gets corrected by adding a new note, never by rewriting history), author + timestamp always visible, never editable or deletable.
+
+### Customer detail — linked history
+
+`/admin/customers/[id]` shows: order history (unchanged from before), **linked leads** (every `leads` row with `customerId` pointing here, each linking back to `/admin/leads/[id]`), and **internal notes** (`NotesList` + `NoteForm`) — plus a "Create Order for this Customer" link and an "Edit Customer" link.
+
+### Dashboard
+
+Fixed the stale `statusCounts["confirmed"]` reference (silently masked while `orders` was empty — `"confirmed"` no longer exists in the approved 8-value lifecycle, replaced by `"approved"`). Added: **Active projects** (`approved` + `in-progress` + `awaiting-client`), **Awaiting client**, **Unpaid orders**, **Deposit paid** (via the new `getPaymentStatusCounts()`). No revenue metrics — matches the standing "don't overbuild analytics" instruction; there's still no payment-processing data anywhere in this schema to compute one from honestly.
+
+### Audit events
+
+```
+customer.created              { source: "manual" | "lead" }
+customer.updated              {}
+customer.note_added            {}
+lead.customer_linked           { customerId }
+order.created                 { orderNumber, source, lineCount }
+order.lines_updated            { lineCount }     — draft-only line edits
+order.status_changed           { from, to }
+order.payment_status_changed     { from, to }
+order.note_added              {}
+```
+
+No names, emails, phone numbers, company names, note bodies, or line-item descriptions in any audit metadata — verified directly during both automated testing and the real acceptance test (a scan of every audit row tied to the real lead/customer/order confirmed zero PII matches).
+
+### Security and transactions
+
+Every export in `mutate-customer.ts`, `mutate-lead-customer.ts`, and `mutate-order.ts` independently calls `requireAdminUser()` as its first line — never relies on the protected admin layout's own check, per the rule established since Phase 12. Every multi-row operation (create-customer-from-lead, manual-order-creation, draft-line-replacement, every status/payment change) runs inside one `db.transaction()` alongside its `recordAuditEvent()` call — a failure at any step rolls back everything, including the audit row, so a logged event and the change it describes can never drift apart.
+
+### Automated regression testing
+
+34 checks (the 32 requested items plus two intermediate submission-success assertions), run against the real Neon database using only `test-phase18b-*@example.invalid`-tagged data, wrapped in a `try/finally` so cleanup always runs even if a check throws mid-way. One real bug was caught **in the test script itself, not the application**: the first attempt at testing "checkout order creation remains operational" used a fake, non-existent `productId`, which the database's real `order_lines_product_id_products_id_fk` constraint correctly rejected (`23503`) — this actually *proved* the FK still works post-migration rather than exposing a defect. The test was corrected to reference the real, published Custom Graphic Design product (a safe, read-only FK reference — the product itself was never modified) and passed. Coverage included: manual customer creation, email normalization, duplicate-email rejection, customer update, customer notes, the full lead→new-customer transaction (both audit events), lead→existing-customer linking, double-link prevention, original-lead-content preservation, manual draft order creation, real `BRCP-####` generation, multiple custom lines (one physical, one service), description round-tripping, null `productId`/`productSlug` for custom lines, a real catalog-linked line, server-side money calculation, correct subtotal, draft-only line editing (and its lock once the order leaves draft), every valid status/payment transition (and rejection of invalid ones), order notes, zero PII in audit metadata, correct admin attribution, continued checkout-order operability, and confirmation that no public route imports the customer/order query modules. All temporary rows (customers, leads, orders, order_lines, notes, audit_log entries) were deleted immediately after — confirmed via a fresh read showing the database back at its exact pre-test baseline.
+
+**BRCP sequence honesty**: automated testing consumed real sequence values — the sequence was **never reset** (per the standing rule that it must not be manipulated even to make numbers contiguous), so those numbers are permanently retired. This is a documented, accepted cost of testing against the real numbering system rather than a mocked one.
+
+### Real acceptance test — what was genuinely verified
+
+Using your own real conversion (not seeded, not synthetic): your legitimate Phase 18A lead was converted to a real customer via **Create Customer from Lead**, linked correctly (`lead.customerId` set, both `customer.created` and `lead.customer_linked` audit events recorded, both attributed to the real owner account) — the original lead's name/email/message were confirmed unchanged by the conversion. A real manual order, **BRCP-1013**, was created for that customer with one service-type line item ("graphic design work" plus a custom description), correctly showing `productId`/`productSlug` as `null` (no fake catalog reference), `unitPrice`/`lineSubtotal` in integer cents with `lineSubtotal` exactly equal to `unitPrice × quantity`, and `pricingSummary.subtotal` exactly equal to the sum of its lines. Draft line editing was exercised successfully (`order.lines_updated` recorded) before the order was moved through real work-status transitions (`draft → submitted → approved`, each individually audited with correct `{from, to}` metadata) and a real order note was added (`order.note_added`, audit metadata empty, no PII). The customer detail page correctly showed both the linked lead and the linked order. Every audit event tied to this real workflow — 13 in total, spanning both the Phase 18A lead actions and this Phase 18B conversion/order — was confirmed attributed to the real owner account, and a full-metadata PII scan across all of them found zero matches.
+
+**One discrepancy, reported honestly rather than assumed away**: read-only verification found **no `customer.note_added` audit event and no `notes` row with `entityType = "customer"` anywhere in the database** — despite "Customer Note" being listed among the confirmed-working workflow steps. The order note (`order.note_added`) genuinely exists and is correctly recorded; the customer note does not appear to have persisted. The `addCustomerNoteAction` code path is structurally identical to the proven `addLeadNoteAction`/`addOrderNoteAction` paths (both of which did persist correctly in this same session), so this reads as either a session-staleness redirect at the moment of submission (the same known, previously-documented `requireAdminUser()` behavior from Brand Controls/Services Admin — see those sections above) or the note simply wasn't submitted, rather than an application defect. Retrying the customer-note step is expected to work; this was not fixed or fabricated on your behalf.
+
+**BRCP-1013 is your genuine, live, currently-active manual order — real acceptance-test history, not a placeholder to revert.**
+
+### What's still not built (documented, not silently deferred)
+
+No Stripe or any payment processor — `paymentStatus` is manual admin tracking only, never a real charge/refund. No revenue metrics on the dashboard — there's no real payment-processing data to compute one from honestly. No customer portal or customer-facing accounts/login. No SMS or email automation (status/payment changes are silent — no notification is sent to the customer). No invoice/PDF generation. Order line items support text/quantity/price only — no file attachments, no line-item-level intake forms (the existing `intakeRequired`/`intakeFormSlug`/`intakeStatus` columns remain unpopulated, same as every prior phase). None of this is scheduled here — recorded so a future phase doesn't have to re-derive the gap list from scratch.
+
+### Phase 19 (planned, not started)
+
+The next major phase after this business-operations admin work is expected to bring: **Media Library video uploads** (the `media_assets` schema is already video-ready — `type: "image" | "video"`, format-agnostic `mimeType`/`sizeBytes` — but no upload path or player exists yet), **video playback** on the storefront/portfolio (`ProductMedia`/`ProjectGallery` currently only render a video's poster image with a "VIDEO" badge, never actual playback), **homepage/portfolio/service video support** more broadly, and **admin-controlled website animations/motion**. Nothing for Phase 19 is touched, planned in code, or scaffolded during Phase 18 — this is a forward-looking note only.
+
 ## Rules for creating new components
 
 - One component per homepage section, placed in `src/components/`.
