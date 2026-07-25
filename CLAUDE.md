@@ -1949,9 +1949,104 @@ Using your own real conversion (not seeded, not synthetic): your legitimate Phas
 
 No Stripe or any payment processor — `paymentStatus` is manual admin tracking only, never a real charge/refund. No revenue metrics on the dashboard — there's no real payment-processing data to compute one from honestly. No customer portal or customer-facing accounts/login. No SMS or email automation (status/payment changes are silent — no notification is sent to the customer). No invoice/PDF generation. Order line items support text/quantity/price only — no file attachments, no line-item-level intake forms (the existing `intakeRequired`/`intakeFormSlug`/`intakeStatus` columns remain unpopulated, same as every prior phase). None of this is scheduled here — recorded so a future phase doesn't have to re-derive the gap list from scratch.
 
-### Phase 19 (planned, not started)
+### Phase 19 (Phase 19A complete — see below; 19B not started)
 
-The next major phase after this business-operations admin work is expected to bring: **Media Library video uploads** (the `media_assets` schema is already video-ready — `type: "image" | "video"`, format-agnostic `mimeType`/`sizeBytes` — but no upload path or player exists yet), **video playback** on the storefront/portfolio (`ProductMedia`/`ProjectGallery` currently only render a video's poster image with a "VIDEO" badge, never actual playback), **homepage/portfolio/service video support** more broadly, and **admin-controlled website animations/motion**. Nothing for Phase 19 is touched, planned in code, or scaffolded during Phase 18 — this is a forward-looking note only.
+This section originally noted that the next major phase would bring Media Library video uploads. That work is now done — see "Video Media Foundation (Phase 19A)" below for the complete architecture. Still not started: public video playback on the storefront/portfolio/services/homepage (Phase 19A is deliberately Media Library foundation only — see that section's "Not built this phase"), and admin-controlled website animations/motion (Phase 19B).
+
+## Video Media Foundation (Phase 19A)
+
+**Status: the Media Library supports real video assets end to end — upload, storage, server-side validation, preview, poster images, replacement, and usage reporting — live-tested against your own real upload.** This is deliberately **infrastructure and admin support only**: no public page renders video yet, no animation controls exist, no AI video generation exists. Phase 19B (public video wiring for Portfolio/Services/Product, and admin-controlled animations) is a separate, later phase.
+
+### Supported formats and size limit
+
+**MP4 (`video/mp4`) and WebM (`video/webm`) only** — the two formats every modern browser plays natively with `<video>`, no plugin. MOV/AVI/MKV are rejected regardless of what the browser declares, matching the exact allowlist philosophy already established for images (nothing outside the allowlist can ever pass — there is no denylist to keep complete).
+
+`MAX_VIDEO_UPLOAD_BYTES = 100 MB` (`src/data/media.ts`) — a deliberate starting policy, not a platform ceiling: comfortably covers a 60–90 second, reasonably-compressed 1080p promo/event-recap clip (the realistic content this business actually produces) without inviting multi-minute raw phone-camera dumps that would hurt upload UX and page performance. `MAX_IMAGE_UPLOAD_BYTES` stays exactly `8 MB`, completely untouched — the two limits are independent constants, never shared or silently reused across media types.
+
+### Architecture — browser-direct-to-Blob, not a Server Action relay
+
+Video upload is architecturally different from image upload, and deliberately so:
+
+```
+Browser
+  → authenticated POST /api/media/video-upload-token
+  → short-lived, scoped client upload token (allowedContentTypes + maximumSizeInBytes baked in)
+  → browser uploads directly to Vercel Blob (bytes never pass through our server)
+  → authenticated confirmVideoUploadAction Server Action (receives only the resulting blob URL/pathname)
+  → server fetches a byte range back from that URL and validates the REAL bytes
+  → media_assets row created only if validation passes
+```
+
+**Why not the image path's Server Action body-relay**: a 100 MB video would either force `next.config.ts`'s Server Action `bodySizeLimit` to be raised globally (affecting every action in the app, not just this one — explicitly rejected) or push a huge request through a serverless function's memory/duration budget for no benefit. Images stay exactly as they were — 8 MB is comfortably within Server Action territory, and that proven, simple, working path was never touched.
+
+`POST /api/media/video-upload-token` (`src/app/api/media/video-upload-token/route.ts`) issues the token via `@vercel/blob/client`'s `handleUpload()`, constraining `allowedContentTypes: ["video/mp4", "video/webm"]` and `maximumSizeInBytes` server-side, before the browser ever receives a token. It uses a new `getAdminUserOrNull()` (`src/server/require-admin-user.ts`) rather than `requireAdminUser()` — this is a JSON API consumed by the `@vercel/blob` client SDK, not a page; `requireAdminUser()`'s redirect-on-failure behavior would send the SDK's internal `fetch()` a 307 to `/admin/login` instead of a clean 401 it can actually surface as an error. Both functions share the same core authorization lookup (`role`/`active` re-read from `admin_users` on every call, never trusted from the session) — only the failure behavior differs.
+
+**Why the database write doesn't happen via `handleUpload()`'s `onUploadCompleted` callback**: that callback is a server-to-server webhook — Vercel's infrastructure calls back to a publicly reachable URL, which a local `next dev` server cannot receive without a tunnel. Since both automated testing and real manual acceptance testing need to work locally, the browser instead calls a normal Server Action (`confirmVideoUploadAction`/`confirmVideoReplaceAction`) once `upload()` resolves — this works identically in local dev, preview, and production, and still independently calls `requireAdminUser()`.
+
+### `BLOB_READ_WRITE_TOKEN` — a real, discovered requirement, added deliberately
+
+**A genuine defect was found and fixed during real acceptance testing, not assumed away**: `@vercel/blob@2.6.1`'s `handleUpload()` resolves its credentials via a narrower internal function (`getReadWriteBlobTokenFromOptionsOrEnv`) than the plain `put()`/`del()` functions already used elsewhere in this codebase (`resolveBlobAuth`, which supports OIDC via `VERCEL_OIDC_TOKEN` + `BLOB_STORE_ID`). `handleUpload()`'s credential resolver has **no OIDC fallback at all** — it only accepts an explicit `token` option or `process.env.BLOB_READ_WRITE_TOKEN`, confirmed by reading the actual compiled source in `node_modules/@vercel/blob`, not assumed from documentation. Every attempt to generate a client token failed with `"Vercel Blob: No read-write token found..."`, surfaced to the browser as the SDK's generic `"Failed to retrieve the client token"` — this was root-caused by direct source inspection before any code was touched.
+
+**The fix required zero application code changes** — `handleUpload()` already auto-reads `process.env.BLOB_READ_WRITE_TOKEN` when no `token` option is passed, and the route never passed one. `BLOB_READ_WRITE_TOKEN` was added manually via the Vercel dashboard/CLI to **Development, Preview, and Production** for this project, scoped to the existing **BigRedMedia** store (confirmed via `vercel blob get-store` — there is exactly one Blob store on the account, `BigRedMedia (store_CguB3jAZSflfUnrr)`, base URL matching the hostname already allow-listed in `next.config.ts`; no second store was created). It is **server-only** — never prefixed `NEXT_PUBLIC_`, never referenced in any client component, never sent to the browser. The only thing that ever reaches the browser is the short-lived, narrowly-scoped client token `handleUpload()` generates from it — confirmed structurally distinct from the long-lived token itself during testing (see "Real acceptance test" below). Its value is never written to source code, logs, commit messages, or this file — only the environment variable **name** is referenced anywhere in this codebase or its documentation.
+
+### Server-side post-upload validation — the real content check
+
+`src/server/validate-video-upload.ts` mirrors `validate-media-upload.ts`'s exact philosophy: real magic-byte sniffing, never trusting the browser's declared filename/Content-Type. Since video bytes never pass through the server as a single buffer, validation operates on a **byte prefix**: `fetchAndValidateUploadedVideo(url)` fetches only the first ~512 bytes of the now-public Blob object via a ranged request (`Range: bytes=0-511`), sniffs real magic bytes (MP4's `ftyp` box signature at byte offset 4–7; WebM's EBML magic number plus a bounded search for the `webm` DocType string within the first 512 bytes — documented honestly as a practical, not perfect, WebM/Matroska distinguisher, since both share the same EBML magic number and full EBML tree parsing was deliberately avoided as exactly the kind of fragile hand-written container parser this project avoided for duration parsing too). **Total file size is read from the response's real `Content-Range` header** (e.g. `bytes 0-511/9733983` — the number after `/`), never from a client-claimed size. A file that fails either check is deleted from Blob and **never** gets a `media_assets` row — invalid uploads never become active Media Library records, by construction.
+
+The upload token's `allowedContentTypes` constraint (enforced by Blob's own infrastructure before upload) and this post-upload byte-sniff are two independent layers: `allowedContentTypes` only constrains the *declared* content type, not the real bytes, so the post-upload check remains the real backstop against a file whose actual content doesn't match what was declared.
+
+### Video replacement — same permanent-ID philosophy, extended with a type guard
+
+`confirmVideoReplaceAction` mirrors `replaceMediaAssetAction`'s (image) exact pattern: the permanent `media_assets.id` never changes, only `storageKey`/`url`/`mimeType`/`sizeBytes`/`updatedAt` are updated on the existing row, and the **previous Blob object is deliberately left in place, not deleted** — unchanged from Phase 15's recoverability-over-immediate-cleanup policy. `posterMediaAssetId` is untouched by a video replace, so an existing poster relationship survives.
+
+**Both replacement directions are now explicitly guarded**: `replaceMediaAssetAction` (image) rejects if `existing.type !== "image"`; `confirmVideoReplaceAction` (video) rejects if `existing.type !== "video"`. Neither silently allows a cross-type replacement — an image can never be replaced by a video, and a video can never be replaced by an image, each with a readable, explicit guard rather than relying only on the format validator's implicit rejection of the wrong bytes.
+
+### Poster architecture (`posterMediaAssetId`)
+
+Schema (migration `0011_stale_jubilee.sql`, already applied — see "Migrations" below): `media_assets.posterMediaAssetId` — nullable, **self-referencing** foreign key to `media_assets.id` (required Drizzle's self-reference pattern, `references((): AnyPgColumn => mediaAssets.id, ...)`), `ON DELETE SET NULL`. Archiving or (hypothetically) deleting the poster image can never cascade-delete or block deletion of the video that references it — the video row simply loses its poster pointer, exactly like every other optional media reference in this schema. There is deliberately **no DB-level constraint restricting the referenced row to `type = 'image'`** — that rule lives at the application layer (`setMediaAssetPosterAction`), matching how every other "which kind of asset belongs here" rule in this codebase already lives in validation code, not SQL.
+
+`setMediaAssetPosterAction` re-verifies **fresh, inside the transaction**, that a submitted poster: exists, is `type: "image"`, and is `status: "active"` — never trusting that the picker UI's own filtering was the only gate, so a stale page, a race with someone else archiving the image, or a hand-crafted request are all caught identically. Reuses the existing `media.updated` audit action (not a new video-only event) with metadata limited to `{fields: ["posterMediaAssetId"]}` — no filenames, URLs, or asset IDs, matching the exact minimal-metadata convention `updateMediaAssetAction`'s alt/caption edits already established.
+
+`MediaPosterField.tsx` (the admin UI) only ever offers **active image** assets, sourced from the newly-generalized `getActiveMediaAssetsForPicker(["image"])` — but the server-side re-check above is the real authority, not this UI filter.
+
+### Media pickers — generalized, but no existing picker was widened automatically
+
+`getActiveImageAssetsForPicker()` — the one function every existing picker (Product media, Brand logos) already called — is now a thin, behavior-identical wrapper over a new `getActiveMediaAssetsForPicker(allowedTypes: MediaAssetType[])`. Every existing caller is unaffected: still image-only, unchanged. The only new caller is the poster field, which explicitly passes `["image"]`. This is the mechanism that keeps a video from ever being selectable into a component that only knows how to render `next/image` — the picker offering it simply never appears, per field, by explicit choice, not automatically widened.
+
+### Usage scanning — poster relationships are now reportable
+
+`findAssetsUsingAsPoster(imageId)` (`src/server/queries/media.ts`) — a plain column-equality scan (`posterMediaAssetId = $1`, not a JSONB containment query like the product/service/portfolio scans, since this FK is a scalar column) — reported on an image asset's own "Used by" section on `/admin/media/[id]`, alongside existing product/service/portfolio references. Existing usage-scan functions are completely unmodified.
+
+### Media Library UI
+
+`/admin/media`'s grid: a video card shows its **poster image** (once one is set) with a small "Video" badge overlay, or a generic text placeholder if no poster exists yet — **never an autoplaying `<video>` element in the grid**. `/admin/media/[id]`'s detail page renders a real `<video controls playsInline preload="metadata" poster={...}>` for video assets — **no `autoplay`** — plus the poster picker, replace form (routed to `VideoReplaceForm` for video assets, the original `MediaReplaceForm` for images), and the extended "Used by" block. `MediaFilterBar`'s existing type filter (`image`/`video`) needed no changes — it already read from the schema's real `MEDIA_ASSET_TYPES`.
+
+### Audit events — no new video-only actions
+
+`media.uploaded`, `media.updated`, `media.archived` are reused exactly as they already applied to images — a video upload is still `media.uploaded` with `{filename, mimeType, sizeBytes}` metadata; a video replace is still `media.updated` with `{replaced: true, previousStorageKey}`; a poster change is `media.updated` with `{fields: ["posterMediaAssetId"]}`.
+
+### Migration `0011_stale_jubilee.sql`
+
+One additive change: `media_assets.posterMediaAssetId` (nullable `text`, self-referencing FK, `ON DELETE SET NULL`). Generated, reviewed, and explicitly approved via the full disclosure protocol (complete SQL, column type/nullability/default, destructive-operation analysis, confirmation 0000–0010 remained byte-unchanged, confirmation the migration hadn't been applied, confirmation no real data was touched) before `db:migrate` ever ran. **Migrations 0000–0010 were never rewritten** — 0011 is a new, additive-only file, per the project's standing migration-immutability rule.
+
+### Real acceptance test — what was genuinely verified
+
+Using your own real upload (not seeded, not synthetic): a real MP4 was uploaded through the real browser-direct-to-Blob flow, a real poster was selected from your existing real image asset, and the video was then replaced with a second real file — all through the real admin UI, not a script. Read-only verification directly against Neon and Blob afterward confirmed every claim rather than assuming success:
+
+- **Exactly 1 legitimate video asset** — `type: video`, `status: active`, `mimeType: video/mp4`, final size **9,733,983 bytes**.
+- **Poster relationship**: `posterMediaAssetId` correctly references your legitimate existing image asset (`status: active`, `type: image`) — confirmed both from the video's own row and from `findAssetsUsingAsPoster()` correctly reporting the relationship from the image's side.
+- **Replacement preserved the permanent `media_assets.id`** — confirmed by there being exactly one video row throughout, with all three of its audit events referencing the same single `entityId`.
+- **Replacement changed the underlying Blob storage key** — confirmed directly from the stored audit history itself, not inferred: the replace event's own metadata recorded the *previous* `storageKey`, which differs from the row's current one.
+- **The poster relationship survived the replacement** — `posterMediaAssetId` was set before the replace and remained set afterward, untouched by `confirmVideoReplaceAction` (which never touches that column).
+- **The final Blob object is genuinely live and readable** — a real fetch against its URL returned `200`, with `Content-Length` matching the stored `sizeBytes` exactly.
+- **Exactly 3 legitimate audit events** for this video (`media.uploaded`, `media.updated` poster-set, `media.updated` replaced) — `audit_log` moved from 37 → **40** rows, precisely those three, all attributed to the real owner account, metadata free of credentials/tokens/URLs.
+- **No duplicates**: 2 total `media_assets` rows exist — the 1 original real image plus this 1 real video — never more.
+
+One real defect was found and fixed along the way, documented above rather than glossed over: `handleUpload()`'s OIDC gap, discovered specifically because this real upload attempt failed with `"Failed to retrieve the client token"` before the fix.
+
+### What's still not built this phase (documented, not silently deferred)
+
+No public page renders video yet — `ProductMedia`/`ProjectGallery`/`ServiceHero` etc. still only ever render a video's poster image with a "VIDEO" badge, exactly as before Phase 19A. No `VideoMedia` public component has been built yet. No automatic poster-frame generation (poster selection is manual, from an already-uploaded image, exactly as approved). No orphaned-Blob cleanup for superseded replace targets (same documented, deferred Phase 15 policy, now also applying to video). No `Product.media`/`ServiceImage`/`ProjectImage` type widening for video beyond what already existed (`ServiceImage`/`ProjectImage` still have no `type` field at all — untouched, per explicit instruction not to widen them this phase). No transcoding, no adaptive bitrate streaming, no automatic duration extraction (deferred — the reliable, dependency-free approach identified is a browser-native `HTMLVideoElement.duration` read, not yet implemented). No animation controls, no AI video generation, no Mux/Cloudinary integration.
 
 ## Rules for creating new components
 

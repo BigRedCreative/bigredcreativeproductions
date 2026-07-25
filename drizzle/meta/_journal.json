@@ -78,6 +78,13 @@
       "when": 1784950935021,
       "tag": "0010_fantastic_mephistopheles",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1784957699936,
+      "tag": "0011_stale_jubilee",
+      "breakpoints": true
     }
   ]
 }

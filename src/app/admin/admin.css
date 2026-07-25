@@ -855,6 +855,32 @@
   object-fit: contain;
 }
 
+/* Phase 19A — video card badge (shown over a real poster thumbnail,
+   distinct from .admin-media-card-video-label's big centered text used
+   only when no poster exists yet) and the detail-page <video> preview. */
+.admin-media-card-video-badge {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  padding: 3px 8px;
+  background: var(--black);
+  color: var(--cream);
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-weight: 800;
+}
+
+.admin-media-video-preview {
+  display: block;
+  width: 100%;
+  max-width: 480px;
+  aspect-ratio: 16 / 9;
+  background: var(--black);
+  border: var(--border-width) solid var(--black);
+  object-fit: contain;
+}
+
 .admin-media-picker {
   border: var(--border-width) solid rgba(11, 11, 11, 0.2);
   padding: 16px;

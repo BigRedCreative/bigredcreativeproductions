@@ -10,6 +10,7 @@ import {
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
+import type { AnyPgColumn } from "drizzle-orm/pg-core";
 import { relations, sql } from "drizzle-orm";
 import type { Media } from "@/data/media";
 import type { ProductAddOn, ProductOption, ProductPackage, ProductPricing } from "@/data/products";
@@ -477,6 +478,21 @@ export const mediaAssets = pgTable("media_assets", {
   alt: text("alt").notNull().default(""),
   caption: text("caption"),
   status: text("status").notNull().$type<MediaAssetStatus>(),
+  // Phase 19A — nullable, self-referencing FK to another media_assets row
+  // (always an image asset in practice, enforced at the application layer
+  // rather than a DB CHECK constraint, matching how every other "which
+  // kind of asset is allowed here" rule in this codebase already lives in
+  // validation code, not SQL). Lets a video's poster be a real, reusable,
+  // independently-replaceable Media Library image — the same optional-
+  // mediaAssetId-plus-manual-fallback pattern already proven three times
+  // (Product.media, brand_settings logos, service/portfolio hero images).
+  // ON DELETE SET NULL: deleting/archiving the poster image must never
+  // cascade-delete or block deletion of the video asset that references
+  // it — the video row simply loses its poster reference, exactly like
+  // every other optional media reference in this schema.
+  posterMediaAssetId: text("poster_media_asset_id").references((): AnyPgColumn => mediaAssets.id, {
+    onDelete: "set null",
+  }),
   createdByAdminUserId: uuid("created_by_admin_user_id").references(() => adminUsers.id, { onDelete: "set null" }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
@@ -484,6 +500,11 @@ export const mediaAssets = pgTable("media_assets", {
 
 export const mediaAssetsRelations = relations(mediaAssets, ({ one }) => ({
   createdByAdminUser: one(adminUsers, { fields: [mediaAssets.createdByAdminUserId], references: [adminUsers.id] }),
+  posterMediaAsset: one(mediaAssets, {
+    fields: [mediaAssets.posterMediaAssetId],
+    references: [mediaAssets.id],
+    relationName: "posterMediaAsset",
+  }),
 }));
 
 // ---------------------------------------------------------------------

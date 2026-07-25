@@ -1,8 +1,9 @@
 import Link from "next/link";
 import Image from "next/image";
-import { listMediaAssets } from "@/server/queries/media";
+import { listMediaAssets, getMediaAssetsByIds } from "@/server/queries/media";
 import MediaFilterBar from "@/components/admin/MediaFilterBar";
 import MediaUploadForm from "@/components/admin/MediaUploadForm";
+import VideoUploadForm from "@/components/admin/VideoUploadForm";
 import AdminPagination from "@/components/admin/AdminPagination";
 import StatusBadge from "@/components/admin/StatusBadge";
 
@@ -22,13 +23,23 @@ export default async function AdminMediaPage({ searchParams }: MediaPageProps) {
 
   const { rows, totalCount, pageCount } = await listMediaAssets({ page, status, type, search: q });
 
+  const posterIds = rows
+    .filter((row) => row.type === "video" && row.posterMediaAssetId)
+    .map((row) => row.posterMediaAssetId as string);
+  const posterMap = await getMediaAssetsByIds(posterIds);
+
   return (
     <div>
       <h1 className="admin-page-heading">Media</h1>
 
       <div className="admin-form-section">
-        <h2>Upload</h2>
+        <h2>Upload image</h2>
         <MediaUploadForm />
+      </div>
+
+      <div className="admin-form-section">
+        <h2>Upload video</h2>
+        <VideoUploadForm />
       </div>
 
       <MediaFilterBar status={status} type={type} search={q} />
@@ -42,25 +53,33 @@ export default async function AdminMediaPage({ searchParams }: MediaPageProps) {
       ) : (
         <>
           <div className="admin-media-grid">
-            {rows.map((asset) => (
-              <Link key={asset.id} href={`/admin/media/${asset.id}`} className="admin-media-card">
-                <div className="admin-media-card-thumb">
-                  {asset.type === "image" ? (
-                    <Image src={asset.url} alt={asset.alt} fill sizes="200px" />
-                  ) : (
-                    <span className="admin-media-card-video-label">Video</span>
-                  )}
-                </div>
-                <div className="admin-media-card-meta">
-                  <p className="admin-media-card-filename">{asset.filename}</p>
-                  <p className="admin-media-card-detail">
-                    {asset.width && asset.height ? `${asset.width}×${asset.height} · ` : ""}
-                    {formatBytes(asset.sizeBytes)}
-                  </p>
-                  <StatusBadge status={asset.status} />
-                </div>
-              </Link>
-            ))}
+            {rows.map((asset) => {
+              const poster = asset.posterMediaAssetId ? posterMap.get(asset.posterMediaAssetId) : undefined;
+              return (
+                <Link key={asset.id} href={`/admin/media/${asset.id}`} className="admin-media-card">
+                  <div className="admin-media-card-thumb">
+                    {asset.type === "image" ? (
+                      <Image src={asset.url} alt={asset.alt} fill sizes="200px" />
+                    ) : poster ? (
+                      <>
+                        <Image src={poster.url} alt={poster.alt} fill sizes="200px" />
+                        <span className="admin-media-card-video-badge">Video</span>
+                      </>
+                    ) : (
+                      <span className="admin-media-card-video-label">Video</span>
+                    )}
+                  </div>
+                  <div className="admin-media-card-meta">
+                    <p className="admin-media-card-filename">{asset.filename}</p>
+                    <p className="admin-media-card-detail">
+                      {asset.width && asset.height ? `${asset.width}×${asset.height} · ` : ""}
+                      {formatBytes(asset.sizeBytes)}
+                    </p>
+                    <StatusBadge status={asset.status} />
+                  </div>
+                </Link>
+              );
+            })}
           </div>
           <AdminPagination page={page} pageCount={pageCount} baseHref="/admin/media" baseParams={{ status, type, q }} />
         </>
