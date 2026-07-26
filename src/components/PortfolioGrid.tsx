@@ -2,16 +2,25 @@
 
 import { useMemo, useState } from "react";
 import type { Project, ProjectCategory } from "@/data/projects";
+import type { MotionPreset, MotionIntensity } from "@/data/motion";
+import { useMotionEntrance } from "./MotionSection";
 import ProjectCard from "./ui/ProjectCard";
 
 type PortfolioGridProps = {
   projects: Project[];
+  preset: MotionPreset;
+  intensity: MotionIntensity;
+  stagger: boolean;
 };
 
 const ALL_FILTER = "All" as const;
 type FilterValue = ProjectCategory | typeof ALL_FILTER;
 
-export default function PortfolioGrid({ projects }: PortfolioGridProps) {
+export default function PortfolioGrid({ projects, preset, intensity, stagger }: PortfolioGridProps) {
+  // Already a client component (for filtering), so it attaches the motion
+  // hook directly to its own .project-grid div rather than going through
+  // MotionSection's wrapper — one fewer DOM node, same mechanism.
+  const { ref: motionRef, visible: motionVisible } = useMotionEntrance<HTMLDivElement>(preset);
   const categories = useMemo(() => {
     const unique: ProjectCategory[] = [];
     for (const project of projects) {
@@ -54,7 +63,13 @@ export default function PortfolioGrid({ projects }: PortfolioGridProps) {
           ))}
         </div>
       )}
-      <div className="project-grid">
+      <div
+        ref={motionRef}
+        className="project-grid"
+        {...(stagger ? { "data-motion-container": preset } : { "data-motion": preset })}
+        data-motion-intensity={intensity}
+        data-motion-visible={motionVisible ? "true" : undefined}
+      >
         {filteredProjects.length > 0 ? (
           filteredProjects.map((project, index) => (
             <ProjectCard key={project.slug} project={project} index={index} />

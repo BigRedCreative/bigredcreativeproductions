@@ -18,6 +18,7 @@ import type { CartAddOnSelection, CartOptionSelection, CartPackageSelection } fr
 import type { OrderPricingSummary } from "@/data/orders";
 import type { ServiceImage, ServiceProcessStep } from "@/data/services";
 import type { ProjectImage, ProjectExternalLink, ProjectResult, ProjectCredit } from "@/data/projects";
+import type { MotionSettingsStatus, MotionIntensity, MotionPreset, HeroEntrance } from "@/data/motion";
 
 // Server-side persistence layer — see CLAUDE.md "Backend + database
 // foundation" for the full architecture writeup. This schema deliberately
@@ -846,3 +847,55 @@ export const notes = pgTable(
 export const notesRelations = relations(notes, ({ one }) => ({
   adminUser: one(adminUsers, { fields: [notes.adminUserId], references: [adminUsers.id] }),
 }));
+
+// ---------------------------------------------------------------------
+// Phase 19D-1 — Motion System + Admin Controls. Exactly two rows,
+// differentiated by `status`, the identical draft/published singleton-pair
+// pattern already proven by brand_settings (Phase 16) and homepage_content
+// (Phase 14) — never a version-history table, just "the one being edited"
+// and "the one that's live." No unique index enforces the two-row limit
+// (brand_settings/homepage_content don't either) — that discipline lives
+// entirely in the application layer (src/server/mutate-motion.ts, not yet
+// built), exactly like those two tables.
+//
+// Every preset column is a closed, validated enum string — never raw CSS,
+// never a transform/duration/easing value, never arbitrary text. This is
+// the actual security/safety boundary for a future Big Red Brain
+// suggestion (see CLAUDE.md "Phase 19D" once written): there is no column
+// here an AI (or a human) could write an arbitrary CSS expression into,
+// only a value from MOTION_PRESETS/MOTION_INTENSITIES/HERO_ENTRANCE_OPTIONS.
+//
+// The enum constants themselves live in src/data/motion.ts, not here —
+// only the TYPES are imported for these columns' $type<>() annotations.
+// This mirrors the exact ServiceImage/ProjectImage pattern already used
+// throughout this file: src/data/*.ts is the single, client-safe source
+// of truth for a business enum/shape, schema.ts only borrows its type.
+// Keeping the runtime arrays out of schema.ts also keeps them safely
+// importable from client components (the admin motion form, MotionSection)
+// without pulling any drizzle-orm code into a client bundle.
+//
+// Deliberately does NOT reference media_assets or homepage_content in any
+// way — Phase 19D-1 is motion-only. Hero media (heroMediaAssetId on
+// homepage_content) is explicit Phase 19D-2 scope; this table's
+// `heroEntrance` column only ever chooses between "none" and
+// "cinematic_reveal" as a presentation *behavior*, independent of whether
+// any hero media exists yet.
+// ---------------------------------------------------------------------
+export const motionSettings = pgTable("motion_settings", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  status: text("status").notNull().$type<MotionSettingsStatus>(),
+  // Global multiplier applied on top of every section's own preset choice
+  // — scales distance/duration/easing together via a fixed, code-owned
+  // mapping (never a raw number an admin or AI can set directly).
+  intensity: text("intensity").notNull().$type<MotionIntensity>(),
+  heroEntrance: text("hero_entrance").notNull().$type<HeroEntrance>(),
+  servicesPreset: text("services_preset").notNull().$type<MotionPreset>(),
+  servicesStagger: boolean("services_stagger").notNull().default(false),
+  statementPreset: text("statement_preset").notNull().$type<MotionPreset>(),
+  portfolioPreset: text("portfolio_preset").notNull().$type<MotionPreset>(),
+  portfolioStagger: boolean("portfolio_stagger").notNull().default(false),
+  studioPreset: text("studio_preset").notNull().$type<MotionPreset>(),
+  processPreset: text("process_preset").notNull().$type<MotionPreset>(),
+  processStagger: boolean("process_stagger").notNull().default(false),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});

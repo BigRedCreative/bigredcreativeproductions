@@ -1,9 +1,10 @@
-import { sectionAnchors } from "@/config/sections";
 import { hero } from "@/data/homepage";
 import { getPublishedHeroContent, getSiteSettings } from "@/server/queries/site-content";
 import type { HeroContent } from "@/server/queries/site-content";
+import { getPublishedMotionSettings, getDraftMotionSettings } from "@/server/queries/motion";
 import Badge from "./ui/Badge";
 import Button from "./ui/Button";
+import HeroMotionShell from "./HeroMotionShell";
 
 type HeroProps = {
   // Admin-only override — the draft-preview page passes the DRAFT row's
@@ -12,6 +13,10 @@ type HeroProps = {
   // public page will render, not a reconstruction). Omitted everywhere
   // else, which reads the live PUBLISHED row as before.
   content?: HeroContent;
+  // Phase 19D-1 — "published" (default) everywhere public; "draft" is
+  // used only by /admin/website/motion/preview, mirroring Header/Footer's
+  // existing brandVariant prop pattern exactly.
+  motionVariant?: "published" | "draft";
 };
 
 // Database-backed as of Phase 14 — every rendered field below now comes
@@ -20,14 +25,15 @@ type HeroProps = {
 // stay code-owned presentational/accessibility details, not part of the
 // admin-editable content set. No hero image or secondary CTA is rendered
 // this phase — those columns exist but are reserved, per Phase 14 scope.
-export default async function Hero({ content: contentOverride }: HeroProps = {}) {
-  const [content, settings] = await Promise.all([
+export default async function Hero({ content: contentOverride, motionVariant = "published" }: HeroProps = {}) {
+  const [content, settings, motion] = await Promise.all([
     contentOverride ? Promise.resolve(contentOverride) : getPublishedHeroContent(),
     getSiteSettings(),
+    motionVariant === "draft" ? getDraftMotionSettings() : getPublishedMotionSettings(),
   ]);
 
   return (
-    <section className="hero grain" id={sectionAnchors.hero}>
+    <HeroMotionShell heroEntrance={motion.heroEntrance} intensity={motion.intensity}>
       <Badge as="div" className="hero-sticker sticker-one">
         {content.badgePrimary}
       </Badge>
@@ -54,6 +60,6 @@ export default async function Hero({ content: contentOverride }: HeroProps = {})
           <b>{hero.cta.icon}</b>
         </Button>
       </div>
-    </section>
+    </HeroMotionShell>
   );
 }

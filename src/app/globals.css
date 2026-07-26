@@ -189,6 +189,101 @@ legend{padding:0}
 .process-grid article{padding:30px 24px 50px;border-right:var(--border-width) solid var(--black);min-height:310px}
 .process-grid article:last-child{border-right:0}.process-grid b{color:var(--red);font-size:11px}
 .process-grid h3{font-size:35px;letter-spacing:-.05em;margin:70px 0 10px;text-transform:uppercase}.process-grid p{color:var(--gray);line-height:1.45}
+
+/* ============================================================
+   Motion System (Phase 19D-1) — src/components/MotionSection.tsx /
+   motion-observer.ts drive data-motion/data-motion-container/
+   data-motion-visible; every value is one of the closed enums in
+   src/data/motion.ts, never arbitrary text. Ease is one fixed,
+   restrained curve reused everywhere (no bounce/overshoot) — an
+   editorial, not a template, feel.
+   ============================================================ */
+:root{--motion-ease:cubic-bezier(.16,.84,.44,1)}
+[data-motion-intensity="subtle"]{--motion-distance:10px;--motion-duration:.45s}
+[data-motion-intensity="standard"]{--motion-distance:22px;--motion-duration:.6s}
+[data-motion-intensity="bold"]{--motion-distance:38px;--motion-duration:.75s}
+
+[data-motion="fade"]{opacity:0;transition:opacity var(--motion-duration) var(--motion-ease)}
+[data-motion="fade"][data-motion-visible="true"]{opacity:1}
+[data-motion="fade_up"]{opacity:0;transform:translateY(var(--motion-distance));transition:opacity var(--motion-duration) var(--motion-ease),transform var(--motion-duration) var(--motion-ease)}
+[data-motion="fade_up"][data-motion-visible="true"]{opacity:1;transform:translateY(0)}
+[data-motion="fade_down"]{opacity:0;transform:translateY(calc(var(--motion-distance)*-1));transition:opacity var(--motion-duration) var(--motion-ease),transform var(--motion-duration) var(--motion-ease)}
+[data-motion="fade_down"][data-motion-visible="true"]{opacity:1;transform:translateY(0)}
+[data-motion="slide_left"]{opacity:0;transform:translateX(var(--motion-distance));transition:opacity var(--motion-duration) var(--motion-ease),transform var(--motion-duration) var(--motion-ease)}
+[data-motion="slide_left"][data-motion-visible="true"]{opacity:1;transform:translateX(0)}
+[data-motion="slide_right"]{opacity:0;transform:translateX(calc(var(--motion-distance)*-1));transition:opacity var(--motion-duration) var(--motion-ease),transform var(--motion-duration) var(--motion-ease)}
+[data-motion="slide_right"][data-motion-visible="true"]{opacity:1;transform:translateX(0)}
+[data-motion="scale_in"]{opacity:0;transform:scale(.94);transition:opacity var(--motion-duration) var(--motion-ease),transform var(--motion-duration) var(--motion-ease)}
+[data-motion="scale_in"][data-motion-visible="true"]{opacity:1;transform:scale(1)}
+[data-motion="reveal"]{opacity:0;clip-path:inset(0 0 100% 0);transition:opacity var(--motion-duration) var(--motion-ease),clip-path var(--motion-duration) var(--motion-ease)}
+[data-motion="reveal"][data-motion-visible="true"]{opacity:1;clip-path:inset(0 0 0% 0)}
+
+/* Stagger containers — the container itself is observed once; its DIRECT
+   CHILDREN animate with a fixed, non-admin-configurable per-child delay,
+   capped after the first 6 children (index 1-5 individually stepped,
+   index 6+ all share the max delay). STAGGER_CHILD_CAP=6,
+   STAGGER_STEP_MS=90 — chosen so a long list never keeps animating for
+   more than ~0.45s of stagger before every remaining item reveals
+   together; never exposed to Admin. */
+[data-motion-container]>*{transition-timing-function:var(--motion-ease);transition-duration:var(--motion-duration)}
+[data-motion-container="fade"]>*{opacity:0;transition-property:opacity}
+[data-motion-container="fade"][data-motion-visible="true"]>*{opacity:1}
+[data-motion-container="fade_up"]>*{opacity:0;transform:translateY(var(--motion-distance));transition-property:opacity,transform}
+[data-motion-container="fade_up"][data-motion-visible="true"]>*{opacity:1;transform:translateY(0)}
+[data-motion-container="fade_down"]>*{opacity:0;transform:translateY(calc(var(--motion-distance)*-1));transition-property:opacity,transform}
+[data-motion-container="fade_down"][data-motion-visible="true"]>*{opacity:1;transform:translateY(0)}
+[data-motion-container="slide_left"]>*{opacity:0;transform:translateX(var(--motion-distance));transition-property:opacity,transform}
+[data-motion-container="slide_left"][data-motion-visible="true"]>*{opacity:1;transform:translateX(0)}
+[data-motion-container="slide_right"]>*{opacity:0;transform:translateX(calc(var(--motion-distance)*-1));transition-property:opacity,transform}
+[data-motion-container="slide_right"][data-motion-visible="true"]>*{opacity:1;transform:translateX(0)}
+[data-motion-container="scale_in"]>*{opacity:0;transform:scale(.94);transition-property:opacity,transform}
+[data-motion-container="scale_in"][data-motion-visible="true"]>*{opacity:1;transform:scale(1)}
+[data-motion-container="reveal"]>*{opacity:0;clip-path:inset(0 0 100% 0);transition-property:opacity,clip-path}
+[data-motion-container="reveal"][data-motion-visible="true"]>*{opacity:1;clip-path:inset(0 0 0% 0)}
+[data-motion-container][data-motion-visible="true"]>*:nth-child(1){transition-delay:0ms}
+[data-motion-container][data-motion-visible="true"]>*:nth-child(2){transition-delay:90ms}
+[data-motion-container][data-motion-visible="true"]>*:nth-child(3){transition-delay:180ms}
+[data-motion-container][data-motion-visible="true"]>*:nth-child(4){transition-delay:270ms}
+[data-motion-container][data-motion-visible="true"]>*:nth-child(5){transition-delay:360ms}
+[data-motion-container][data-motion-visible="true"]>*:nth-child(n+6){transition-delay:450ms}
+
+/* Hero "Cinematic Reveal" — coordinates the hero's own existing elements
+   with fixed, restrained sequential delays. A special, small option set
+   distinct from the generic preset family above (see src/data/motion.ts) —
+   never per-letter, never a rotation/bounce, just a tasteful staged fade
+   + lift matching the same --motion-distance/--motion-duration the
+   chosen intensity already sets. */
+.hero[data-motion="cinematic_reveal"] .hero-sticker,
+.hero[data-motion="cinematic_reveal"] .hero-meta,
+.hero[data-motion="cinematic_reveal"] h1,
+.hero[data-motion="cinematic_reveal"] .hero-tagline,
+.hero[data-motion="cinematic_reveal"] .hero-foot{
+  opacity:0;transform:translateY(var(--motion-distance,22px));
+  transition:opacity var(--motion-duration,.6s) var(--motion-ease),transform var(--motion-duration,.6s) var(--motion-ease)
+}
+.hero[data-motion="cinematic_reveal"][data-motion-visible="true"] .hero-sticker{opacity:1;transform:translateY(0);transition-delay:0ms}
+.hero[data-motion="cinematic_reveal"][data-motion-visible="true"] .hero-meta{opacity:1;transform:translateY(0);transition-delay:80ms}
+.hero[data-motion="cinematic_reveal"][data-motion-visible="true"] h1{opacity:1;transform:translateY(0);transition-delay:180ms}
+.hero[data-motion="cinematic_reveal"][data-motion-visible="true"] .hero-tagline{opacity:1;transform:translateY(0);transition-delay:300ms}
+.hero[data-motion="cinematic_reveal"][data-motion-visible="true"] .hero-foot{opacity:1;transform:translateY(0);transition-delay:400ms}
+
+/* Reduced motion — mandatory, unconditional. Content is ALWAYS fully
+   visible in its final state; this must never depend on JavaScript
+   running — it is a pure CSS override with no JS branch required to be
+   correct, only to be efficient (see useMotionEntrance's own
+   prefers-reduced-motion check). */
+@media (prefers-reduced-motion: reduce){
+  [data-motion],[data-motion-container],[data-motion-container]>*,
+  .hero[data-motion="cinematic_reveal"] .hero-sticker,
+  .hero[data-motion="cinematic_reveal"] .hero-meta,
+  .hero[data-motion="cinematic_reveal"] h1,
+  .hero[data-motion="cinematic_reveal"] .hero-tagline,
+  .hero[data-motion="cinematic_reveal"] .hero-foot{
+    opacity:1!important;transform:none!important;clip-path:none!important;
+    transition:none!important;transition-delay:0ms!important;animation:none!important
+  }
+}
+
 .contact{
   position:relative;background:var(--red);color:white;padding:var(--section-padding-y-md) var(--section-padding-x);
   display:grid;grid-template-columns:1fr 1fr;gap:9vw;overflow:hidden
