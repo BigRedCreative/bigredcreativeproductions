@@ -20,6 +20,15 @@ import MediaStatusToggle from "@/components/admin/MediaStatusToggle";
 import MediaReplaceForm from "@/components/admin/MediaReplaceForm";
 import VideoReplaceForm from "@/components/admin/VideoReplaceForm";
 import MediaPosterField from "@/components/admin/MediaPosterField";
+import AskBrainForm from "@/components/admin/AskBrainForm";
+import type { Preset } from "@/components/admin/AskBrainForm";
+
+const MEDIA_BRAIN_PRESETS: Preset[] = [
+  { requestType: "analyze_media", label: "Where could I use this asset?", question: "Where could I use this asset?" },
+  { requestType: "analyze_media", label: "How does this fit my existing website?", question: "How does this fit my existing website?" },
+  { requestType: "recommend_caption", label: "Suggest promotional uses", question: "Suggest promotional uses for this asset." },
+  { requestType: "creative_direction", label: "What content could I build around this?", question: "What content could I build around this asset?" },
+];
 
 type MediaDetailPageProps = {
   params: Promise<{ id: string }>;
@@ -235,6 +244,8 @@ export default async function AdminMediaDetailPage({ params }: MediaDetailPagePr
               <span>{asset.id}</span>
             </div>
           </div>
+
+          <AskBrainForm requestSource="media_detail" relatedEntityType="media_asset" relatedEntityId={asset.id} presets={MEDIA_BRAIN_PRESETS} />
         </div>
       </div>
     </div>

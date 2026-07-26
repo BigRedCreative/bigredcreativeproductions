@@ -28,14 +28,20 @@ function stripControlCharacters(text: string): string {
   return out;
 }
 
-function sanitizeForStorage(text: string): string {
+// Exported — Phase 20B's context-truncation helper (src/server/brain/
+// context-truncation.ts) reuses these exact same two primitives for
+// entity/business content entering AI context, rather than duplicating
+// sanitize/truncate logic a second time. Same treatment either way: this
+// is defense-in-depth sanitization applied to untrusted admin-authored
+// text, not something specific to "summaries."
+export function sanitizeForStorage(text: string): string {
   const noCodeFences = text.replace(/```[\s\S]*?```/g, " ");
   const noHtmlTags = noCodeFences.replace(/<[^>]*>/g, " ");
   const noControlChars = stripControlCharacters(noHtmlTags);
   return noControlChars.replace(/\s+/g, " ").trim();
 }
 
-function truncateAtWordBoundary(text: string, maxLength: number): string {
+export function truncateAtWordBoundary(text: string, maxLength: number): string {
   if (text.length <= maxLength) return text;
   const cut = text.slice(0, maxLength - 1);
   const lastSpace = cut.lastIndexOf(" ");

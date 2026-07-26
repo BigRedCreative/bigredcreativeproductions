@@ -4,6 +4,16 @@ import { getPortfolioEntityForAdmin } from "@/server/queries/portfolio";
 import StatusBadge from "@/components/admin/StatusBadge";
 import PublishPortfolioButton from "@/components/admin/PublishPortfolioButton";
 import PortfolioArchiveToggle from "@/components/admin/PortfolioArchiveToggle";
+import AskBrainForm from "@/components/admin/AskBrainForm";
+import type { Preset } from "@/components/admin/AskBrainForm";
+
+const PORTFOLIO_BRAIN_PRESETS: Preset[] = [
+  { requestType: "analyze_portfolio", label: "Critique this project", question: "Critique this project." },
+  { requestType: "analyze_portfolio", label: "How can I improve this case study?", question: "How can I improve this case study?" },
+  { requestType: "analyze_portfolio", label: "What should I highlight?", question: "What should I highlight about this project?" },
+  { requestType: "recommend_seo", label: "Suggest better SEO", question: "Suggest a better SEO title and description for this project." },
+  { requestType: "recommend_caption", label: "Suggest promotional copy", question: "Suggest promotional copy for this project." },
+];
 
 type PortfolioDetailPageProps = {
   params: Promise<{ id: string }>;
@@ -130,6 +140,8 @@ export default async function AdminPortfolioDetailPage({ params }: PortfolioDeta
               <span>{project.entity.updatedAt.toLocaleDateString("en-US")}</span>
             </div>
           </div>
+
+          <AskBrainForm requestSource="portfolio_detail" relatedEntityType="portfolio_project" relatedEntityId={id} presets={PORTFOLIO_BRAIN_PRESETS} />
         </div>
       </div>
     </div>

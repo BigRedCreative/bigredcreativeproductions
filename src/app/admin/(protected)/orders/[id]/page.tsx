@@ -9,6 +9,16 @@ import NoteForm from "@/components/admin/NoteForm";
 import NotesList from "@/components/admin/NotesList";
 import { addOrderNoteAction } from "@/server/mutate-order";
 import type { OrderStatus, PaymentStatus } from "@/data/orders";
+import AskBrainForm from "@/components/admin/AskBrainForm";
+import type { Preset } from "@/components/admin/AskBrainForm";
+
+const ORDER_BRAIN_PRESETS: Preset[] = [
+  { requestType: "summarize_order", label: "What needs my attention?", question: "What needs my attention on this order?" },
+  { requestType: "summarize_order", label: "Is anything blocking this project?", question: "Is anything blocking this project?" },
+  { requestType: "summarize_order", label: "What should happen next?", question: "What should happen next on this order?" },
+  { requestType: "summarize_order", label: "Summarize this order", question: "Summarize this order." },
+  { requestType: "summarize_order", label: "Review payment/work status", question: "Review this order's payment and work status." },
+];
 
 type OrderDetailPageProps = {
   params: Promise<{ id: string }>;
@@ -95,6 +105,8 @@ export default async function AdminOrderDetailPage({ params }: OrderDetailPagePr
             <NotesList notes={order.internalNotes} />
             <NoteForm action={addOrderNoteAction.bind(null, order.id)} />
           </div>
+
+          <AskBrainForm requestSource="order_detail" relatedEntityType="order" relatedEntityId={order.id} presets={ORDER_BRAIN_PRESETS} />
         </div>
 
         <div>

@@ -4,6 +4,16 @@ import { getServiceEntityForAdmin } from "@/server/queries/services";
 import StatusBadge from "@/components/admin/StatusBadge";
 import PublishServiceButton from "@/components/admin/PublishServiceButton";
 import ServiceArchiveToggle from "@/components/admin/ServiceArchiveToggle";
+import AskBrainForm from "@/components/admin/AskBrainForm";
+import type { Preset } from "@/components/admin/AskBrainForm";
+
+const SERVICE_BRAIN_PRESETS: Preset[] = [
+  { requestType: "analyze_service", label: "Critique this service", question: "Critique this service." },
+  { requestType: "analyze_service", label: "How can I position this better?", question: "How can I position this service better?" },
+  { requestType: "analyze_service", label: "What content is missing?", question: "What content is missing from this service?" },
+  { requestType: "recommend_caption", label: "Suggest marketing ideas", question: "Suggest marketing ideas for this service." },
+  { requestType: "recommend_seo", label: "Suggest SEO improvements", question: "Suggest SEO improvements for this service." },
+];
 
 type ServiceDetailPageProps = {
   params: Promise<{ id: string }>;
@@ -130,6 +140,8 @@ export default async function AdminServiceDetailPage({ params }: ServiceDetailPa
               <span>{service.entity.updatedAt.toLocaleDateString("en-US")}</span>
             </div>
           </div>
+
+          <AskBrainForm requestSource="service_detail" relatedEntityType="service" relatedEntityId={id} presets={SERVICE_BRAIN_PRESETS} />
         </div>
       </div>
     </div>

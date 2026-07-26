@@ -6,6 +6,15 @@ import StatusBadge from "@/components/admin/StatusBadge";
 import NoteForm from "@/components/admin/NoteForm";
 import NotesList from "@/components/admin/NotesList";
 import { addCustomerNoteAction } from "@/server/mutate-customer";
+import AskBrainForm from "@/components/admin/AskBrainForm";
+import type { Preset } from "@/components/admin/AskBrainForm";
+
+const CUSTOMER_BRAIN_PRESETS: Preset[] = [
+  { requestType: "summarize_customer", label: "Summarize this customer", question: "Summarize this customer." },
+  { requestType: "summarize_customer", label: "What should I follow up on?", question: "What should I follow up on with this customer?" },
+  { requestType: "summarize_customer", label: "What opportunities do you see?", question: "What opportunities do you see with this customer?" },
+  { requestType: "summarize_customer", label: "What should I do next?", question: "What should I do next with this customer?" },
+];
 
 type CustomerDetailPageProps = {
   params: Promise<{ id: string }>;
@@ -108,6 +117,8 @@ export default async function AdminCustomerDetailPage({ params }: CustomerDetail
             <NotesList notes={customer.notes} />
             <NoteForm action={addCustomerNoteAction.bind(null, customer.id)} />
           </div>
+
+          <AskBrainForm requestSource="customer_detail" relatedEntityType="customer" relatedEntityId={customer.id} presets={CUSTOMER_BRAIN_PRESETS} />
         </div>
 
         <div>
