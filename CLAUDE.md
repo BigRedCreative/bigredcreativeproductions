@@ -2465,7 +2465,123 @@ This is a real, live-verified sub-cent cost — proof the microdollar accounting
 
 ### What's still not built (documented, not silently deferred)
 
-Entity-specific context builders and the Customer/Order/Portfolio/Service/Media detail-page "Ask Big Red Brain" entry points (Phase 20B). Any DRAFT-write tool — Big Red Brain cannot yet stage a change into any existing draft/publish system, even with approval; that remains a future, separately-scoped subphase. AI Creative Studio, image generation, video generation, and testimonial-reel generation — entirely unbuilt. A precise billing-vs-rate-limit distinction in failure categorization (documented above as a known, safe, non-blocking gap). A monthly-spend UI element beyond the plain read-only "Spend this month" line — no alert/notification system exists.
+Any DRAFT-write tool — Big Red Brain cannot yet stage a change into any existing draft/publish system, even with approval; that remains a future, separately-scoped subphase (Phase 20C). AI Creative Studio, image generation, video generation, and testimonial-reel generation — entirely unbuilt. A precise billing-vs-rate-limit distinction in failure categorization (documented above as a known, safe, non-blocking gap). A monthly-spend UI element beyond the plain read-only "Spend this month" line — no alert/notification system exists. Entity-specific context builders and detail-page entry points — built in Phase 20B, see below.
+
+## Big Red Brain Context-Aware Entry Points (Phase 20B)
+
+**Status: complete — "Ask Big Red Brain" entry points now exist on the Customer, Order, Portfolio, Service, and Media admin detail pages, each independently context-aware, still strictly READ + RECOMMEND. Live-tested against all five real entity types in one real acceptance session — every request succeeded, cost $0.0135 combined, and left zero PII or business content in `brain_requests`/`audit_log` beyond what was explicitly approved.**
+
+### The five entry points
+
+Each detail page renders one `<AskBrainForm>` block with entity-specific presets:
+
+- **Customer** (`/admin/customers/[id]`) — "Summarize this customer", "What should I follow up on?", "What opportunities do you see?", "What should I do next?" — all `summarize_customer`.
+- **Order** (`/admin/orders/[id]`) — "What needs my attention?", "Is anything blocking this project?", "What should happen next?", "Summarize this order", "Review payment/work status" — all `summarize_order`.
+- **Portfolio** (`/admin/portfolio/[id]`) — "Critique this project" / "How can I improve this case study?" / "What should I highlight?" (`analyze_portfolio`), "Suggest better SEO" (`recommend_seo`), "Suggest promotional copy" (`recommend_caption`).
+- **Service** (`/admin/services/[id]`) — "Critique this service" / "How can I position this better?" / "What content is missing?" (`analyze_service`), "Suggest marketing ideas" (`recommend_caption`), "Suggest SEO improvements" (`recommend_seo`).
+- **Media** (`/admin/media/[id]`) — "Where could I use this asset?" / "How does this fit my existing website?" (`analyze_media`), "Suggest promotional uses" (`recommend_caption`), "What content could I build around this?" (`creative_direction`).
+
+Every `requestType` above already existed in Phase 20A's closed `BRAIN_REQUEST_TYPES` vocabulary — `recommend_seo` (previously reserved, unused) activated here for the first time, and `recommend_caption`/`creative_direction` are deliberately **reused** across Portfolio/Service/Media rather than duplicated into entity-specific type names. No new request type was invented.
+
+### Shared `AskBrainForm` architecture — one component, five call sites
+
+`src/components/admin/AskBrainForm.tsx` gained three optional props (`requestSource`, `relatedEntityType`, `relatedEntityId`) plus a `presets` override — the exact same component Phase 20A's dashboard already used, not five independent Brain forms. This mirrors `NoteForm.tsx`/`NotesList.tsx`'s established Phase 18B pattern (one generic component, bound per entity) rather than inventing a new one. The client submits **only** five raw strings — `question`, `requestType`, `requestSource`, `relatedEntityType`, `relatedEntityId` — never a context object, never an entity label, never anything resembling business content.
+
+### Server-side entity re-fetch — the real trust boundary
+
+Nothing submitted by the client is trusted as already-correct structure. `src/server/brain/handle-request.ts`'s `resolveRequestContext()` independently re-fetches the referenced entity via the same, already-safe admin query functions every other admin page already uses (`getCustomerById`, `getOrderById`, `getPortfolioEntityForAdmin`, `getServiceEntityForAdmin`, `getMediaAssetById`) — a malformed id, a nonexistent id, or a real id submitted under the wrong `relatedEntityType` are all rejected as a clean `validation_error` before any context is built or any provider call happens. Live-verified: a real customer id submitted as `relatedEntityType: "order"` is correctly rejected (the order lookup finds no matching row).
+
+### `requestSource` ↔ `requestType` ↔ `relatedEntityType` compatibility matrix
+
+Two fixed lookup tables in `handle-request.ts`:
+- `SOURCE_TO_ENTITY_TYPE` — `brain_dashboard` → no entity; each of the other five sources → exactly one required `BrainRelatedEntityType`.
+- `TYPE_TO_ALLOWED_SOURCES` — every value in `BRAIN_REQUEST_TYPES` maps to the exact sources allowed to use it (e.g. `summarize_customer` → `["customer_detail"]` only; `recommend_caption` → `["brain_dashboard", "portfolio_detail", "service_detail", "media_detail"]`).
+
+A request failing *either* check is rejected before any database read for context happens — confirmed by automated test in both directions (wrong entity type for a source, and wrong source for a type).
+
+### `relatedEntityType`/`relatedEntityId` tracking
+
+Uses the exact columns and closed vocabulary (`BRAIN_RELATED_ENTITY_TYPES`) Phase 20A's migration `0014` already created — **no new migration was needed for Phase 20B**. Every entity-scoped `brain_requests` row permanently stores the real `relatedEntityType`/`relatedEntityId`; **audit metadata deliberately does NOT** — the approved Phase 20B rule is that successful entity-scoped audit metadata contains exactly `{requestType, requestSource, relatedEntityType}`, never the id, since `brain_requests` already stores it permanently and audit metadata must stay minimal. Verified by automated test and by direct inspection of the real acceptance audit rows: zero occurrences of any real entity id inside `audit_log.metadata`.
+
+### Context builders — explicit allowlists, never a database-row spread
+
+`src/server/brain/context-builder.ts` gained `buildCustomerContext()`, `buildOrderContext()`, `buildPortfolioContext()`, `buildServiceContext()`, `buildMediaContext()` — each returns `{ ok: true, context } | { ok: false }`, mirroring `buildDashboardContext()`'s own "fixed, explicit allowlist, never a general-purpose fetch" rule. Final shapes:
+
+- **Customer**: `displayName`, `company`, `customerSinceLabel`, `orderCount`, `mostRecentOrderStatus`, `daysSinceMostRecentOrder`, `leadCount`, `mostRecentLeadStatus`, `hasRecentNote`, `daysSinceLastNote`.
+- **Order**: `orderNumber`, `workStatus`, `paymentStatus`, `source`, `subtotal`, `depositDue`, `hasEstimatedPricing`, `lineItems` (title/description/quantity only), `customerDisplayName`, `hasCustomerMessage`, `internalNoteCount`, `daysSinceLastNote`, `daysSinceCreated`/`daysSinceUpdated`, `isUnpaid`.
+- **Portfolio**: `title`, `category`, `servicesTags`, `summary`, `fullDescription`, `client`, `year`, `entityStatus`, `featured`, `seoTitle`, `seoDescription`, `galleryImageCount`/`galleryVideoCount`, `galleryAltTexts`, `results`, `hasMissingGallery`, `hasThinSeoDescription`.
+- **Service**: `title`, `summary`, `fullDescription`, `capabilities`, `deliverables`, `process`, `entityStatus`, `featured`, `seoTitle`, `seoDescription`, `galleryImageCount`/`galleryVideoCount`, `galleryAltTexts`, `startingPrice`/`pricingNote`/`turnaround` (only when genuinely populated), `hasMissingGallery`, `hasThinSeoDescription`.
+- **Media**: `filename`, `altText`, `caption`, `type`, `mimeType`, `width`/`height`, `status`, `daysSinceCreated`, `hasPoster`, `usedByProductCount`/`usedByServiceCount`/`usedByPortfolioCount`, `usedAsHomepageHero`, `usedAsPosterForCount`, `isOrphaned`, `hasMissingAltText`, `isArchived`.
+
+### Explicit exclusions
+
+- **PII**: customer email, phone, and physical address are never included (Customer/Order context — verified against the real customer's actual email/phone, confirmed absent from the real captured prompt in automated testing).
+- **Notes/messages**: raw note bodies and the customer's raw checkout message are never included — only `hasRecentNote`/`internalNoteCount`/`daysSinceLastNote`-style booleans and counts. Structurally impossible to leak, since no note-body field exists anywhere in `CustomerContext`/`OrderContext`.
+- **Contributor names**: Portfolio's `credits` field (role/name pairs) is entirely excluded per your explicit decision — `PortfolioContext` has no `credits` key at all.
+- **Blob URLs / storage keys**: `MediaContext` has no `url`/`storageKey` field — only `filename` (display name), confirmed absent from the real captured prompt.
+
+### Deterministic local facts — never asked of the model
+
+`isUnpaid` (Order), `hasMissingGallery`/`hasThinSeoDescription` (Portfolio, Service, reusing the exact `MIN_SEO_DESCRIPTION_LENGTH` threshold `buildDashboardContext()` already established), `isOrphaned`/`hasMissingAltText`/`isArchived` (Media) — all plain comparisons against data the application already has exactly, included as boolean context fields so Brain never has to guess something SQL can answer precisely.
+
+### Portfolio/Service truncation limits
+
+`src/server/brain/context-truncation.ts` (new) — named constants, applied **before** `buildUserPrompt()` is ever called, never after:
+
+```
+MAX_CONTEXT_SHORT_FIELD_LENGTH  = 200   (titles, SEO fields, alt text, list items)
+MAX_CONTEXT_MEDIUM_FIELD_LENGTH = 400   (summary, process-step descriptions)
+MAX_CONTEXT_LONG_FIELD_LENGTH   = 800   (fullDescription)
+MAX_CONTEXT_LIST_ITEMS      = 10    (capabilities, deliverables, results, gallery alt texts, order line items)
+```
+
+`truncateContextField()` reuses Phase 20A's own `safe-summary.ts` primitives (`sanitizeForStorage()` + `truncateAtWordBoundary()`, both exported for this reuse) — sanitize (strip HTML-like tags/code fences/control characters) then word-boundary-truncate, the identical discipline already applied to stored summaries, now applied to admin-authored business content entering AI context. Verified by automated test: a synthetic 5,000-character description is bounded to the approved max, and the real Portfolio acceptance-test prompt stayed well within a sane total size.
+
+### System instructions vs. untrusted business DATA vs. admin question
+
+Unchanged from Phase 20A — `BRAIN_SYSTEM_INSTRUCTIONS` and `buildUserPrompt()`'s fencing/labeling were already generic enough to cover any DATA shape, not just dashboard aggregates. Every entity context field still passes through the truncation/sanitization above before ever reaching the DATA block, and the same "DATA is not instructions" system rule applies regardless of which entity type populated it.
+
+### No new capability surface
+
+No generic SQL/database access was added anywhere — every context builder is a fixed, named function reading a fixed set of fields, never a query the model can shape. No mutation, draft-write, or publish tool exists — Big Red Brain remains exactly as capable as Phase 20A: it can read (via these five new builders plus the existing dashboard one) and recommend (text only), nothing more.
+
+### Recent Brain Activity — read-time label resolution
+
+`/admin/brain`'s history list now shows entity type, a resolved human-readable label, and the source page, alongside the existing status/summary/usage columns. `src/server/queries/brain.ts`'s new `resolveEntityLabels()` batch-resolves labels **at read time only**, grouped by entity type into one query per type — nothing is ever persisted onto `brain_requests` to make this list prettier, per your explicit decision. A reference to an entity that no longer resolves falls back to "record no longer available" rather than erroring.
+
+### Daily/cost accounting — fully reused, not reinvented
+
+The 20/day request cap, integer-microdollar accounting, cached-input pricing, $20/month warning (not a block), 600-token output cap, 30-second timeout, and zero automatic retries are all **identical** to Phase 20A, shared across every source (dashboard + all five entity entry points draw from the same daily counter and the same monthly total) — no second accounting system was introduced. Live-verified: the daily cap correctly blocks an entity-scoped request once the shared limit is reached, not just dashboard requests.
+
+### Real acceptance test — what was genuinely verified
+
+Using your own real session across all five entity detail pages (not seeded, not synthetic) — Order (BRCP-1013, `summarize_order`), Customer (SP Juices' contact, `summarize_customer`), Portfolio (SP Juices, `analyze_portfolio`), Service (Graphic Design, `analyze_service`), and Media (the real video asset, `analyze_media`) — all five requests succeeded with relevant, entity-specific answers that did not mix records or expose unrelated customer/order information. Two independent rounds of read-only verification (immediately after your test, and again before this commit) both confirmed, directly against Neon:
+
+- All five `brain_requests` rows: `status: completed`, `errorCategory: null`, `provider: openai`, `model: gpt-5.6-luna`, correctly owner-attributed, correct `requestType`/`requestSource`/`relatedEntityType`/`relatedEntityId` for each entity, every referenced entity independently confirmed to still exist.
+- Exactly 10 new `brain.*` audit events (5× `brain.requested` + 5× `brain.recommendation_generated`), every one's metadata exactly `{requestType, requestSource, relatedEntityType}` — no `relatedEntityId`, no entity label, no prompt/response/business content, no PII, anywhere.
+- `resolveEntityLabels()` correctly resolved all five real entities to their real labels and admin links.
+- A full security scan of all five persisted rows found zero email-shaped strings, zero Blob URLs, zero storage-key-shaped paths, zero `sk-` tokens, zero `Authorization:` headers, zero occurrences of the literal `OPENAI_API_KEY`, and zero raw `http(s)://` URLs.
+- Exact real usage/cost, preserved to the microdollar:
+
+```
+Order:    542 input / 0 cached / 133 output / 1,340 micros ($0.0013)
+Customer:   479 input / 0 cached / 135 output / 1,289 micros ($0.0013)
+Portfolio:  1,255 input / 0 cached / 600 output / 4,855 micros ($0.0049)
+Service:   786 input / 0 cached / 600 output / 4,386 micros ($0.0044)
+Media:    551 input / 0 cached / 181 output / 1,637 micros ($0.0016)
+
+Combined:  3,613 input tokens, 0 cached input tokens, 1,649 output tokens,
+      13,507 actualCostMicros = $0.013507 total
+```
+
+- Monthly Brain spend at time of verification: **17,359 microdollars = $0.017359** — combining these 5 real requests with the pre-existing Phase 20A acceptance history, still a tiny fraction of the $20 warning threshold.
+- All pre-existing real data confirmed completely unaffected: `media_assets` = 2, video/poster relationship intact, SP Juices' and Graphic Design's video galleries intact, Homepage Hero video intact, `motion_settings` intact, BRCP-1013 intact, 1 lead/1 customer/4 notes, Brand `#E70810`, 7 Services, 4 Portfolio projects, 1 Product.
+
+**`brain_requests` now permanently holds 8 real rows (1 failed/`rate_limited`, 7 completed — 2 from Phase 20A's dashboard acceptance history, 5 from this phase's entity-scoped acceptance history) and `audit_log` holds 15 real `brain.*` events — this is your genuine, live Big Red Brain usage history across both phases, not placeholder or test data to revert.**
+
+### What's still not built (documented, not silently deferred)
+
+Any DRAFT-write tool (Phase 20C). AI Creative Studio, image generation, video generation, testimonial-reel generation (Phase 20D). "Previous Brain recommendations for this record" — the schema/index fully supports it (unchanged from Phase 20A's `brain_requests_related_entity_idx`), deliberately deferred per your explicit decision, not because it's hard. A precise billing-vs-rate-limit distinction in failure categorization (Phase 20A's own documented, non-blocking gap, unchanged this phase).
 
 ## Roadmap
 
@@ -2485,13 +2601,18 @@ Done — see "Cinematic Homepage Hero Media (Phase 19D-2)" above for the full ar
 
 Done — see "Big Red Brain Foundation (Phase 20A)" above for the full architecture and real acceptance-test history. A real, working READ + RECOMMEND AI assistant at `/admin/brain`: a provider-neutral `TextProvider` abstraction (only one concrete implementation, `gpt-5.6-luna` via OpenAI's Responses API, ever imports the `openai` package), an aggregate-only dashboard context builder (no PII, no message/note text), system-instructions/DATA prompt separation, six supported request types, integer-microdollar cost accounting with correct cached-input pricing, a 20/day hard request cap plus a $20/month warning (not a block), safe-summary-only persistence in a new `brain_requests` table (migration `0014`), and full audit logging (`brain.requested`/`brain.recommendation_generated`/`brain.request_failed`). Zero database mutation tools exist anywhere in this phase — Big Red Brain can read and recommend, nothing more. Real-tested against two genuine requests: one honest billing/quota failure, one successful sub-cent-cost recommendation ($0.001843), both permanently preserved as acceptance history.
 
-### Phase 20B — Context-Aware Brain Entry Points — **not started**
+### Phase 20B — Context-Aware Brain Entry Points — **complete**
 
-Adds entity-specific context builders and "Ask Big Red Brain" entry points to the Customer, Order, Portfolio, Service, and Media detail pages (`buildCustomerContext()`, `buildOrderContext()`, etc. — each its own fixed, reviewable shape, never a general-purpose "fetch anything about entity X" helper, per Phase 20A's own context-retrieval architecture). Remains **READ + RECOMMEND only** — no DRAFT-write capability is added in this subphase either.
+Done — see "Big Red Brain Context-Aware Entry Points (Phase 20B)" above for the full architecture and real acceptance-test history. Entity-specific context builders and "Ask Big Red Brain" entry points on the Customer, Order, Portfolio, Service, and Media detail pages (`buildCustomerContext()`, `buildOrderContext()`, `buildPortfolioContext()`, `buildServiceContext()`, `buildMediaContext()` — each its own fixed, reviewable shape, never a general-purpose "fetch anything about entity X" helper), a `requestSource`/`requestType`/`relatedEntityType` compatibility matrix enforced server-side, independent entity re-fetch on every request (no client-submitted context is ever trusted), and defensive per-field truncation for long-form Portfolio/Service text. Remains **READ + RECOMMEND only** — no DRAFT-write capability was added in this subphase either. Real-tested against all five entity types in one session: 5/5 succeeded, $0.013507 combined cost, zero PII/business-content leakage into audit metadata.
 
-### Phase 20C — DRAFT-Write Tools — **not started, requires explicit approval**
+### Phase 20C — the next planned phase — **not started, scope not yet decided**
 
-The first Brain capability beyond text-only output: narrow, single-purpose tools that can stage a suggestion into an *existing* draft/publish system (e.g. a Homepage SEO suggestion written to `homepage_content`'s draft row only, a motion-preset suggestion validated against the same closed enums a human submission already passes through). Never bypasses the existing draft/publish architecture — every AI-originated draft still requires an explicit owner Preview → Publish action, the same discipline already proven throughout this codebase. `PUBLISH`/`MUTATE`/`DESTRUCTIVE` permission levels remain permanently out of scope, not just deferred to a later subphase.
+Two candidate directions have been identified but **neither is approved and neither should be started without explicit direction**:
+
+- **(A) DRAFT-write tools first** — narrow, single-purpose tools that can stage a suggestion into an *existing* draft/publish system (e.g. a Homepage SEO suggestion written to `homepage_content`'s draft row only, a motion-preset suggestion validated against the same closed enums a human submission already passes through). Never bypasses the existing draft/publish architecture — every AI-originated draft still requires an explicit owner Preview → Publish action.
+- **(B) AI Creative Studio image generation first** — the `Select asset → creative task → structured brief → provider generates → owner reviews → saved as a normal media_assets row` flow (see Phase 20D below), starting with image generation before video.
+
+Before implementation begins, the choice between (A) and (B) — or a different scope entirely — must be explicitly made. `PUBLISH`/`MUTATE`/`DESTRUCTIVE` permission levels remain **permanently** out of autonomous Brain scope, regardless of which direction Phase 20C takes — this is not a per-phase decision, it's a standing boundary for the whole Big Red Brain system.
 
 ### Phase 20D — AI Creative Studio — **not started**
 
