@@ -7,6 +7,7 @@ import {
   findServicesReferencingMediaAsset,
   findProjectsReferencingMediaAsset,
   findAssetsUsingAsPoster,
+  findHeroMediaUsage,
   getActiveMediaAssetsForPicker,
   getMediaAssetsByIds,
 } from "@/server/queries/media";
@@ -40,15 +41,16 @@ export default async function AdminMediaDetailPage({ params }: MediaDetailPagePr
 
   const isVideo = asset.type === "video";
 
-  const [productRefs, serviceRefs, projectRefs, posterUsageRefs, posterPickerAssets, currentPosterMap] = await Promise.all([
+  const [productRefs, serviceRefs, projectRefs, heroRefs, posterUsageRefs, posterPickerAssets, currentPosterMap] = await Promise.all([
     findProductsReferencingMediaAsset(id),
     findServicesReferencingMediaAsset(id),
     findProjectsReferencingMediaAsset(id),
+    findHeroMediaUsage(id),
     asset.type === "image" ? findAssetsUsingAsPoster(id) : Promise.resolve([]),
     isVideo ? getActiveMediaAssetsForPicker(["image"]) : Promise.resolve([]),
     isVideo && asset.posterMediaAssetId ? getMediaAssetsByIds([asset.posterMediaAssetId]) : Promise.resolve(new Map()),
   ]);
-  const totalUsageCount = productRefs.length + serviceRefs.length + projectRefs.length + posterUsageRefs.length;
+  const totalUsageCount = productRefs.length + serviceRefs.length + projectRefs.length + heroRefs.length + posterUsageRefs.length;
   const currentPoster = asset.posterMediaAssetId ? (currentPosterMap.get(asset.posterMediaAssetId) ?? null) : null;
 
   return (
@@ -123,9 +125,25 @@ export default async function AdminMediaDetailPage({ params }: MediaDetailPagePr
           <div className="admin-detail-block">
             <h2>Used by</h2>
             {totalUsageCount === 0 ? (
-              <p className="admin-empty-state">Not currently used by any product, service, portfolio project, or video poster.</p>
+              <p className="admin-empty-state">
+                Not currently used by any product, service, portfolio project, homepage hero, or video poster.
+              </p>
             ) : (
               <>
+                {heroRefs.map((ref) => (
+                  <div className="admin-line-item" key={`hero-${ref.versionType}`}>
+                    <p className="admin-line-item-title">Homepage Hero</p>
+                    <p className="admin-line-item-meta">
+                      {ref.versionType === "published" ? (
+                        <>
+                          Homepage Hero (published) · <Link href="/">View on site</Link>
+                        </>
+                      ) : (
+                        "Homepage Hero (private draft — not public yet)"
+                      )}
+                    </p>
+                  </div>
+                ))}
                 {productRefs.map((ref) => (
                   <div className="admin-line-item" key={`product-${ref.productId}`}>
                     <p className="admin-line-item-title">{ref.productTitle}</p>

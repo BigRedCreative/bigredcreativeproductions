@@ -110,6 +110,22 @@ legend{padding:0}
 .sticker-two{left:48vw;bottom:23vh;transform:rotate(-6deg);background:white}
 .hero-foot{border-top:var(--border-width) solid var(--black);padding-top:24px;display:flex;justify-content:space-between;align-items:end}
 .hero-foot p{max-width:720px;font-size:clamp(22px,2.4vw,36px);line-height:1.08;letter-spacing:-.04em;margin:0}
+/* Phase 19D-2 — inline cinematic hero media. A bounded, reserved
+   aspect-ratio box (never full-bleed/background) so typography above
+   stays the visual priority and its presence/absence never causes
+   layout shift. Mirrors .project-hero-media's bordered/shadowed
+   treatment — the closest existing "hero media" precedent — rather
+   than inventing a new visual language. Only ever renders as a 5th
+   flex child of .hero when hero media is actually set; .hero's own
+   space-between layout absorbs it exactly like any other section. */
+.hero-media{
+  align-self:flex-start;margin-top:24px;position:relative;width:100%;max-width:640px;
+  aspect-ratio:16/9;border:var(--border-width-heavy) solid var(--black);
+  box-shadow:var(--shadow-offset-lg) var(--shadow-offset-lg) 0 var(--black);
+  overflow:hidden;background:var(--black)
+}
+.hero-media img{object-fit:cover}
+.hero-media video{width:100%;height:100%;object-fit:contain}
 .round-button{
   width:112px;height:112px;border-radius:var(--radius-round);background:var(--red);color:white;
   display:flex;flex-direction:column;justify-content:center;align-items:center;
@@ -257,7 +273,8 @@ legend{padding:0}
 .hero[data-motion="cinematic_reveal"] .hero-meta,
 .hero[data-motion="cinematic_reveal"] h1,
 .hero[data-motion="cinematic_reveal"] .hero-tagline,
-.hero[data-motion="cinematic_reveal"] .hero-foot{
+.hero[data-motion="cinematic_reveal"] .hero-foot,
+.hero[data-motion="cinematic_reveal"] .hero-media{
   opacity:0;transform:translateY(var(--motion-distance,22px));
   transition:opacity var(--motion-duration,.6s) var(--motion-ease),transform var(--motion-duration,.6s) var(--motion-ease)
 }
@@ -266,6 +283,7 @@ legend{padding:0}
 .hero[data-motion="cinematic_reveal"][data-motion-visible="true"] h1{opacity:1;transform:translateY(0);transition-delay:180ms}
 .hero[data-motion="cinematic_reveal"][data-motion-visible="true"] .hero-tagline{opacity:1;transform:translateY(0);transition-delay:300ms}
 .hero[data-motion="cinematic_reveal"][data-motion-visible="true"] .hero-foot{opacity:1;transform:translateY(0);transition-delay:400ms}
+.hero[data-motion="cinematic_reveal"][data-motion-visible="true"] .hero-media{opacity:1;transform:translateY(0);transition-delay:500ms}
 
 /* Reduced motion — mandatory, unconditional. Content is ALWAYS fully
    visible in its final state; this must never depend on JavaScript
@@ -278,7 +296,8 @@ legend{padding:0}
   .hero[data-motion="cinematic_reveal"] .hero-meta,
   .hero[data-motion="cinematic_reveal"] h1,
   .hero[data-motion="cinematic_reveal"] .hero-tagline,
-  .hero[data-motion="cinematic_reveal"] .hero-foot{
+  .hero[data-motion="cinematic_reveal"] .hero-foot,
+  .hero[data-motion="cinematic_reveal"] .hero-media{
     opacity:1!important;transform:none!important;clip-path:none!important;
     transition:none!important;transition-delay:0ms!important;animation:none!important
   }

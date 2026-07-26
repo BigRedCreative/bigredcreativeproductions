@@ -1,3 +1,4 @@
+import Image from "next/image";
 import { hero } from "@/data/homepage";
 import { getPublishedHeroContent, getSiteSettings } from "@/server/queries/site-content";
 import type { HeroContent } from "@/server/queries/site-content";
@@ -5,6 +6,7 @@ import { getPublishedMotionSettings, getDraftMotionSettings } from "@/server/que
 import Badge from "./ui/Badge";
 import Button from "./ui/Button";
 import HeroMotionShell from "./HeroMotionShell";
+import VideoMedia from "./VideoMedia";
 
 type HeroProps = {
   // Admin-only override — the draft-preview page passes the DRAFT row's
@@ -60,6 +62,22 @@ export default async function Hero({ content: contentOverride, motionVariant = "
           <b>{hero.cta.icon}</b>
         </Button>
       </div>
+
+      {/* Phase 19D-2 — inline cinematic hero media. Bounded, reserved
+          aspect-ratio box so its presence/absence never shifts the
+          typography above, which stays the visual priority (max-width
+          well below full-bleed). VideoMedia is reused completely
+          unmodified — no autoplay, no forced mute/loop, controls always
+          visible, playback always user-initiated. */}
+      {content.heroMediaMode === "video" && content.heroVideoSrc ? (
+        <div className="hero-media">
+          <VideoMedia src={content.heroVideoSrc} alt={content.heroImageAlt ?? ""} posterSrc={content.heroPosterSrc ?? undefined} />
+        </div>
+      ) : content.heroMediaMode === "image" && content.heroImageSrc ? (
+        <div className="hero-media">
+          <Image src={content.heroImageSrc} alt={content.heroImageAlt ?? ""} fill sizes="(max-width: 900px) 100vw, 640px" />
+        </div>
+      ) : null}
     </HeroMotionShell>
   );
 }

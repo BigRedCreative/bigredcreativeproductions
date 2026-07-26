@@ -2,6 +2,9 @@
 
 import { useActionState } from "react";
 import { saveHeroDraftAction } from "@/server/mutate-website-content";
+import HeroMediaField from "./HeroMediaField";
+import type { HeroVideoPickerAsset } from "./HeroMediaField";
+import type { PickerMediaAsset } from "./ProductMediaEditor";
 
 type HeroContentFormValue = {
   badgePrimary: string;
@@ -15,10 +18,31 @@ type HeroContentFormValue = {
   ctaHref: string;
 };
 
+type HeroContentFormProps = {
+  initialDraft: HeroContentFormValue;
+  // Phase 19D-2 — hero media state, kept as separate props from
+  // initialDraft's text fields since HeroMediaField manages its own
+  // mode/selection state independently.
+  initialMediaAssetId: string | null;
+  initialMediaType: "image" | "video" | null;
+  initialImageSrc: string | null;
+  initialImageAlt: string | null;
+  imageAssets: PickerMediaAsset[];
+  videoAssets: HeroVideoPickerAsset[];
+};
+
 // Edits the DRAFT row only — saving here never touches the public site.
 // Publishing (a separate action, see PublishHeroButton) is what copies
 // this content to the live homepage.
-export default function HeroContentForm({ initialDraft }: { initialDraft: HeroContentFormValue }) {
+export default function HeroContentForm({
+  initialDraft,
+  initialMediaAssetId,
+  initialMediaType,
+  initialImageSrc,
+  initialImageAlt,
+  imageAssets,
+  videoAssets,
+}: HeroContentFormProps) {
   const [state, formAction, isPending] = useActionState(saveHeroDraftAction, null);
 
   return (
@@ -83,6 +107,20 @@ export default function HeroContentForm({ initialDraft }: { initialDraft: HeroCo
             <textarea name="supportingCopy" defaultValue={initialDraft.supportingCopy} required />
           </label>
         </div>
+      </fieldset>
+
+      <fieldset className="admin-form-section">
+        <legend>
+          <h2>Hero Media</h2>
+        </legend>
+        <HeroMediaField
+          initialMediaAssetId={initialMediaAssetId}
+          initialMediaType={initialMediaType}
+          initialImageSrc={initialImageSrc}
+          initialImageAlt={initialImageAlt}
+          imageAssets={imageAssets}
+          videoAssets={videoAssets}
+        />
       </fieldset>
 
       <fieldset className="admin-form-section">

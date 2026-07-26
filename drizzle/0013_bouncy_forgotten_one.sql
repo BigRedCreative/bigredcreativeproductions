@@ -1,0 +1,2 @@
+ALTER TABLE "homepage_content" ADD COLUMN "hero_media_asset_id" text;--> statement-breakpoint
+ALTER TABLE "homepage_content" ADD CONSTRAINT "homepage_content_hero_media_asset_id_media_assets_id_fk" FOREIGN KEY ("hero_media_asset_id") REFERENCES "public"."media_assets"("id") ON DELETE set null ON UPDATE no action;

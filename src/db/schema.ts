@@ -412,6 +412,23 @@ export const homepageContent = pgTable("homepage_content", {
   ctaHref: text("cta_href").notNull(),
   heroImageSrc: text("hero_image_src"),
   heroImageAlt: text("hero_image_alt"),
+  // Phase 19D-2 — nullable, optional link to a media_assets row, the same
+  // optional-mediaAssetId-plus-legacy-path-fallback pattern already
+  // proven on Product.media (Phase 15), brand_settings (Phase 16), and
+  // Service/Portfolio hero images (Phase 17). Deliberately does NOT add a
+  // separate "hero media type" column — media_assets.type is already
+  // authoritative for image-vs-video, resolved at read time, never
+  // duplicated here. Deliberately does NOT add a separate hero poster
+  // column either — a video's poster relationship already lives on the
+  // video asset itself (media_assets.posterMediaAssetId, Phase 19A) and
+  // is resolved the same way Portfolio/Service hero media already is.
+  // heroImageSrc/heroImageAlt above remain the legacy/manual IMAGE
+  // fallback, used only when this column is null — untouched, not
+  // repurposed. ON DELETE SET NULL: deleting/archiving the referenced
+  // asset must never cascade-delete or block deletion of this row — the
+  // hero simply loses its media reference, exactly like every other
+  // optional media reference in this schema.
+  heroMediaAssetId: text("hero_media_asset_id").references(() => mediaAssets.id, { onDelete: "set null" }),
   secondaryCtaLabel: text("secondary_cta_label"),
   secondaryCtaHref: text("secondary_cta_href"),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

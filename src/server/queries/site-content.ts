@@ -8,6 +8,7 @@ import { siteConfig } from "@/config/site";
 import { sectionAnchors } from "@/config/sections";
 import { hero as heroFallback, contact as contactFallback, footer as footerFallback } from "@/data/homepage";
 import { primaryNav as primaryNavFallback, headerCta as headerCtaFallback } from "@/data/navigation";
+import { getMediaAssetsByIds } from "@/server/queries/media";
 
 // The ONE place anything in the app reads Phase 14 website content from
 // Neon. Every public read here is field-level-fallback-safe: a null/empty
@@ -135,6 +136,8 @@ export async function getNavigationItemsForAdmin() {
 // homepage_content — exactly two rows (draft/published).
 // ---------------------------------------------------------------------
 
+export type HeroMediaMode = "none" | "image" | "video";
+
 export type HeroContent = {
   badgePrimary: string;
   badgeSecondary: string;
@@ -145,8 +148,32 @@ export type HeroContent = {
   supportingCopy: string;
   ctaLabel: string;
   ctaHref: string;
+  // Phase 19D-2 — RESOLVED at read time, same convention already proven
+  // for ServiceImage/ProjectImage: when heroMediaAssetId resolves to an
+  // IMAGE asset, this is overwritten with that asset's current Blob URL;
+  // otherwise it's the legacy manual path (or null). The STORED column
+  // never changes meaning — only what this resolved object returns can
+  // differ from what's in the database, exactly like every other Media
+  // Library integration in this codebase.
   heroImageSrc: string | null;
   heroImageAlt: string | null;
+  // Phase 19D-2 — the permanent reference, passed through for admin/
+  // debugging convenience. Public rendering branches on heroMediaMode,
+  // not this field directly.
+  heroMediaAssetId: string | null;
+  // Phase 19D-2 — READ-TIME ONLY derived convenience, never persisted.
+  // "none" | "image" | "video", computed from heroMediaAssetId's
+  // resolved asset type (or the legacy manual path) — see
+  // resolveHeroMedia() below.
+  heroMediaMode: HeroMediaMode;
+  // Phase 19D-2 — READ-TIME ONLY, only set when heroMediaMode === "video".
+  // Never persisted into homepage_content — mirrors ProjectImage/
+  // ServiceImage's posterSrc precedent exactly (and the real Phase 19B
+  // bug that proved this needs active server-side enforcement, not just
+  // a comment — see sanitizeHeroMediaForStorage() in
+  // mutate-website-content.ts).
+  heroVideoSrc: string | null;
+  heroPosterSrc: string | null;
   secondaryCtaLabel: string | null;
   secondaryCtaHref: string | null;
 };
@@ -163,12 +190,76 @@ const heroContentFallback: HeroContent = {
   ctaHref: `#${sectionAnchors.portfolio}`,
   heroImageSrc: null,
   heroImageAlt: null,
+  heroMediaAssetId: null,
+  heroMediaMode: "none",
+  heroVideoSrc: null,
+  heroPosterSrc: null,
   secondaryCtaLabel: null,
   secondaryCtaHref: null,
 };
 
-function mergeHeroRow(row: typeof homepageContent.$inferSelect | undefined): HeroContent {
-  if (!row) return heroContentFallback;
+// Phase 19D-2 — the one place a homepage_content row's hero media is
+// resolved. Direct structural port of resolveProjectsMedia()/
+// resolveServicesMedia()'s two-pass shape, sized down to Hero's single
+// slot: resolve heroMediaAssetId to its live asset (if any); if that
+// asset is a video with its own posterMediaAssetId (Phase 19A),
+// batch-resolve that too. No status filter is ever applied here — an
+// already-published reference to a since-archived asset must keep
+// resolving exactly like Portfolio/Service hero media already does; only
+// NEW draft saves reject an archived asset (see mutate-website-content.ts).
+async function resolveHeroMedia(row: typeof homepageContent.$inferSelect | undefined): Promise<Pick<HeroContent, "heroImageSrc" | "heroImageAlt" | "heroMediaAssetId" | "heroMediaMode" | "heroVideoSrc" | "heroPosterSrc">> {
+  if (!row?.heroMediaAssetId) {
+    // No Media Library selection — either the legacy manual path or none.
+    return {
+      heroImageSrc: row?.heroImageSrc ?? null,
+      heroImageAlt: row?.heroImageAlt ?? null,
+      heroMediaAssetId: null,
+      heroMediaMode: row?.heroImageSrc ? "image" : "none",
+      heroVideoSrc: null,
+      heroPosterSrc: null,
+    };
+  }
+
+  const assets = await getMediaAssetsByIds([row.heroMediaAssetId]);
+  const asset = assets.get(row.heroMediaAssetId);
+  if (!asset) {
+    // The referenced row no longer resolves (shouldn't happen under
+    // normal operation — ON DELETE SET NULL means a deleted asset clears
+    // this column — but defensive: never let a dangling id reach the
+    // page as if it were real media).
+    return { heroImageSrc: null, heroImageAlt: row.heroImageAlt ?? null, heroMediaAssetId: null, heroMediaMode: "none", heroVideoSrc: null, heroPosterSrc: null };
+  }
+
+  if (asset.type === "video") {
+    let posterSrc: string | null = null;
+    if (asset.posterMediaAssetId) {
+      const posterAssets = await getMediaAssetsByIds([asset.posterMediaAssetId]);
+      posterSrc = posterAssets.get(asset.posterMediaAssetId)?.url ?? null;
+    }
+    return {
+      heroImageSrc: null,
+      heroImageAlt: row.heroImageAlt ?? null,
+      heroMediaAssetId: row.heroMediaAssetId,
+      heroMediaMode: "video",
+      heroVideoSrc: asset.url,
+      heroPosterSrc: posterSrc,
+    };
+  }
+
+  // Image, resolved via the Media Library.
+  return {
+    heroImageSrc: asset.url,
+    heroImageAlt: row.heroImageAlt ?? null,
+    heroMediaAssetId: row.heroMediaAssetId,
+    heroMediaMode: "image",
+    heroVideoSrc: null,
+    heroPosterSrc: null,
+  };
+}
+
+async function mergeHeroRow(row: typeof homepageContent.$inferSelect | undefined): Promise<HeroContent> {
+  const media = await resolveHeroMedia(row);
+  if (!row) return { ...heroContentFallback, ...media };
   return {
     badgePrimary: row.badgePrimary || heroContentFallback.badgePrimary,
     badgeSecondary: row.badgeSecondary || heroContentFallback.badgeSecondary,
@@ -179,10 +270,9 @@ function mergeHeroRow(row: typeof homepageContent.$inferSelect | undefined): Her
     supportingCopy: row.supportingCopy || heroContentFallback.supportingCopy,
     ctaLabel: row.ctaLabel || heroContentFallback.ctaLabel,
     ctaHref: row.ctaHref || heroContentFallback.ctaHref,
-    heroImageSrc: row.heroImageSrc ?? null,
-    heroImageAlt: row.heroImageAlt ?? null,
     secondaryCtaLabel: row.secondaryCtaLabel ?? null,
     secondaryCtaHref: row.secondaryCtaHref ?? null,
+    ...media,
   };
 }
 
@@ -190,6 +280,18 @@ function mergeHeroRow(row: typeof homepageContent.$inferSelect | undefined): Her
 export const getPublishedHeroContent = cache(async (): Promise<HeroContent> => {
   const db = getDb();
   const row = await db.query.homepageContent.findFirst({ where: eq(homepageContent.status, "published") });
+  return mergeHeroRow(row);
+});
+
+// Phase 19D-2 — admin-preview-only read, used exclusively by
+// /admin/website/homepage/preview, never by any public page. Direct
+// mirror of getPublishedHeroContent(), keyed to the draft row instead —
+// this previously didn't exist; the preview page used to hand-build an
+// unresolved override object from the raw draft row, which had no way to
+// show resolved hero media (or draft motion settings — see that page).
+export const getDraftHeroContent = cache(async (): Promise<HeroContent> => {
+  const db = getDb();
+  const row = await db.query.homepageContent.findFirst({ where: eq(homepageContent.status, "draft") });
   return mergeHeroRow(row);
 });
 

@@ -151,6 +151,15 @@ export type HeroContentFormValue = {
   supportingCopy: string;
   ctaLabel: string;
   ctaHref: string;
+  // Phase 19D-2 — raw, AS-SUBMITTED values only. This parser does shape
+  // extraction only, never normalization/mutual-exclusivity enforcement
+  // — that's normalizeHeroMediaFields() in mutate-website-content.ts's
+  // job, which never trusts these three fields to already be consistent
+  // with each other (the client form is expected to keep them
+  // consistent, but the server is the actual authority).
+  heroMediaAssetId: string | null;
+  heroImageSrc: string | null;
+  heroImageAlt: string | null;
 };
 
 export function buildHeroContentFromFormData(formData: FormData): HeroContentFormValue {
@@ -164,5 +173,8 @@ export function buildHeroContentFromFormData(formData: FormData): HeroContentFor
     supportingCopy: getString(formData, "supportingCopy"),
     ctaLabel: getString(formData, "ctaLabel"),
     ctaHref: getString(formData, "ctaHref"),
+    heroMediaAssetId: getNullableString(formData, "heroMediaAssetId"),
+    heroImageSrc: getNullableString(formData, "heroImageSrc"),
+    heroImageAlt: getNullableString(formData, "heroImageAlt"),
   };
 }

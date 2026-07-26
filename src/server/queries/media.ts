@@ -6,10 +6,11 @@ import {
   products,
   serviceVersions,
   portfolioProjectVersions,
+  homepageContent,
   MEDIA_ASSET_STATUSES,
   MEDIA_ASSET_TYPES,
 } from "@/db/schema";
-import type { MediaAssetStatus, MediaAssetType, ContentVersionType } from "@/db/schema";
+import type { MediaAssetStatus, MediaAssetType, ContentVersionType, HomepageContentStatus } from "@/db/schema";
 
 // The ONE place anything in the app reads a media_assets row from Neon.
 // Server-only, zero insert/update/delete calls — mirrors the exact
@@ -298,4 +299,26 @@ export async function findAssetsUsingAsPoster(mediaAssetId: string): Promise<Med
     .from(mediaAssets)
     .where(eq(mediaAssets.posterMediaAssetId, mediaAssetId));
   return rows.map((row) => ({ videoAssetId: row.id, videoFilename: row.filename }));
+}
+
+// ---------------------------------------------------------------------
+// Phase 19D-2 — Homepage Hero usage. homepage_content has no separate
+// versions table (unlike services/portfolio) — draft and published are
+// two rows on the SAME table, distinguished by `status`, so this is a
+// plain column-equality check (heroMediaAssetId is a scalar FK, not a
+// JSONB array) across both rows, tagged by which one matched — same
+// reasoning as the Service/Portfolio scans: a private draft's media
+// selection is real usage worth showing before archiving an asset, even
+// though it isn't public yet.
+// ---------------------------------------------------------------------
+
+export type MediaAssetHeroUsageRef = { versionType: HomepageContentStatus };
+
+export async function findHeroMediaUsage(mediaAssetId: string): Promise<MediaAssetHeroUsageRef[]> {
+  const db = getDb();
+  const rows = await db
+    .select({ status: homepageContent.status })
+    .from(homepageContent)
+    .where(eq(homepageContent.heroMediaAssetId, mediaAssetId));
+  return rows.map((row) => ({ versionType: row.status as HomepageContentStatus }));
 }

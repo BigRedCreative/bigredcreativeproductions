@@ -20,6 +20,7 @@ import {
   validateOptionalLocalMediaPath,
   validateRequiredLocalMediaPath,
 } from "@/server/validate-website-content";
+import { getMediaAssetsByIds } from "@/server/queries/media";
 
 // Every Phase 14 content mutation lives here. Every export independently
 // calls requireAdminUser() as its first line — this file is a Server
@@ -237,7 +238,56 @@ export async function updateContactContentAction(
 // homepage_content — draft/published split.
 // ---------------------------------------------------------------------
 
-function validateHeroContent(value: ReturnType<typeof buildHeroContentFromFormData>): string[] {
+// Phase 19D-2 — the one place that decides what's ALLOWED to reach
+// homepage_content's hero-media columns. Never trusts the client's mode
+// selector, the picker's own filtering, or which hidden form fields
+// happen to be populated — mutual exclusivity is re-derived purely from
+// which raw values are actually present. A Media Library selection
+// (heroMediaAssetId) always wins and forces heroImageSrc null — this is
+// what makes "never copy the Blob URL into heroImageSrc" and "no stale
+// manual fallback behind a selected Media Library asset" true by
+// construction, not by convention. Only when no Media Library selection
+// exists does the legacy manual path apply.
+type NormalizedHeroMedia = { heroMediaAssetId: string | null; heroImageSrc: string | null; heroImageAlt: string | null };
+
+function normalizeHeroMediaFields(raw: { heroMediaAssetId: string | null; heroImageSrc: string | null; heroImageAlt: string | null }): NormalizedHeroMedia {
+  if (raw.heroMediaAssetId) {
+    return { heroMediaAssetId: raw.heroMediaAssetId, heroImageSrc: null, heroImageAlt: raw.heroImageAlt };
+  }
+  if (raw.heroImageSrc) {
+    return { heroMediaAssetId: null, heroImageSrc: raw.heroImageSrc, heroImageAlt: raw.heroImageAlt };
+  }
+  return { heroMediaAssetId: null, heroImageSrc: null, heroImageAlt: null };
+}
+
+// Phase 19D-2 — the deeper, real-Neon-data check validateHeroContent()
+// can't do on its own (no database access, by design). Never trusts that
+// the admin picker's own "active only" filtering was the only gate — a
+// stale page, a race with someone archiving the asset mid-edit, or a
+// hand-crafted request are all caught identically here. Deliberately
+// checks BOTH image and video references (not just video, unlike
+// Portfolio/Service galleries) — the hero's single slot can legitimately
+// be either type, so both need the same real-asset guarantee. A
+// previously-published reference to an asset that later becomes archived
+// keeps resolving fine at read time (see resolveHeroMedia() in
+// queries/site-content.ts) — only a NEW draft save is rejected here.
+async function validateHeroMediaAsset(heroMediaAssetId: string | null): Promise<string[]> {
+  if (!heroMediaAssetId) return [];
+  const assets = await getMediaAssetsByIds([heroMediaAssetId]);
+  const asset = assets.get(heroMediaAssetId);
+  if (!asset) {
+    return ["The selected hero media no longer exists in the Media Library."];
+  }
+  if (asset.status !== "active") {
+    return [`"${asset.filename}" is archived and can't be selected for a new hero media save. Choose an active image or video instead.`];
+  }
+  if (asset.type !== "image" && asset.type !== "video") {
+    return [`"${asset.filename}" is not a supported hero media type.`];
+  }
+  return [];
+}
+
+function validateHeroContent(value: ReturnType<typeof buildHeroContentFromFormData>, media: NormalizedHeroMedia): string[] {
   const errors: string[] = [];
   const pushIfError = (result: string | null) => {
     if (result) errors.push(result);
@@ -251,6 +301,12 @@ function validateHeroContent(value: ReturnType<typeof buildHeroContentFromFormDa
   pushIfError(validateRequiredText(value.supportingCopy, "Supporting copy"));
   pushIfError(validateRequiredText(value.ctaLabel, "Button label"));
   pushIfError(validateHref(value.ctaHref, "Button link"));
+  // Only relevant when the legacy manual path is actually the active
+  // mode (media.heroImageSrc is null whenever a Media Library asset is
+  // selected instead, per normalizeHeroMediaFields() above).
+  if (media.heroImageSrc) {
+    pushIfError(validateOptionalLocalMediaPath(media.heroImageSrc, "Hero image path"));
+  }
   return errors;
 }
 
@@ -263,9 +319,17 @@ export async function saveHeroDraftAction(
   const adminUser = await requireAdminUser();
 
   const value = buildHeroContentFromFormData(formData);
-  const errors = validateHeroContent(value);
+  // Normalize BEFORE validating/writing — mutual exclusivity is enforced
+  // here, server-side, regardless of what the client's hidden fields
+  // happened to contain (see normalizeHeroMediaFields()'s own comment).
+  const media = normalizeHeroMediaFields(value);
+  const errors = validateHeroContent(value, media);
   if (errors.length > 0) {
     return { errors };
+  }
+  const mediaAssetErrors = await validateHeroMediaAsset(media.heroMediaAssetId);
+  if (mediaAssetErrors.length > 0) {
+    return { errors: mediaAssetErrors };
   }
 
   const db = getDb();
@@ -273,7 +337,11 @@ export async function saveHeroDraftAction(
     await db.transaction(async (tx) => {
       await tx
         .update(homepageContent)
-        .set({ ...value, updatedAt: new Date() })
+        // `media` spreads AFTER `value` so the normalized, authoritative
+        // heroMediaAssetId/heroImageSrc/heroImageAlt always win over
+        // whatever raw values the client submitted — this is the actual
+        // enforcement point, not just documentation of intent.
+        .set({ ...value, ...media, updatedAt: new Date() })
         .where(eq(homepageContent.status, "draft"));
       await recordAuditEvent(tx, {
         adminUserId: adminUser.id,
@@ -328,6 +396,7 @@ export async function publishHeroAction(
           ctaHref: draftRow.ctaHref,
           heroImageSrc: draftRow.heroImageSrc,
           heroImageAlt: draftRow.heroImageAlt,
+          heroMediaAssetId: draftRow.heroMediaAssetId,
           secondaryCtaLabel: draftRow.secondaryCtaLabel,
           secondaryCtaHref: draftRow.secondaryCtaHref,
           updatedAt: new Date(),
