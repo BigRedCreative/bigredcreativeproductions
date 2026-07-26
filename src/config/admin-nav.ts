@@ -19,4 +19,5 @@ export const adminNavItems: AdminNavItem[] = [
   { label: "Website", href: "/admin/website", available: true },
   { label: "Settings", available: false },
   { label: "Big Red Brain", href: "/admin/brain", available: true },
+  { label: "Creative Studio", href: "/admin/creative-studio", available: true },
 ];
