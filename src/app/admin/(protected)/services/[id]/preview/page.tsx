@@ -7,6 +7,7 @@ import ServiceHero from "@/components/ServiceHero";
 import ServiceCapabilities from "@/components/ServiceCapabilities";
 import ServiceDeliverables from "@/components/ServiceDeliverables";
 import ServiceProcess from "@/components/ServiceProcess";
+import ServiceGallery from "@/components/ServiceGallery";
 import ServiceCTA from "@/components/ServiceCTA";
 import { getServiceEntityForAdmin } from "@/server/queries/services";
 
@@ -43,6 +44,7 @@ export default async function AdminServicePreviewPage({ params }: ServicePreview
           <ServiceCapabilities service={service.draft} />
           <ServiceDeliverables service={service.draft} />
           <ServiceProcess service={service.draft} />
+          {service.draft.gallery && service.draft.gallery.length > 0 && <ServiceGallery images={service.draft.gallery} />}
           <ServiceCTA service={service.draft} />
           <Footer />
         </main>

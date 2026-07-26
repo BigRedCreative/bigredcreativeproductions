@@ -1949,9 +1949,450 @@ Using your own real conversion (not seeded, not synthetic): your legitimate Phas
 
 No Stripe or any payment processor — `paymentStatus` is manual admin tracking only, never a real charge/refund. No revenue metrics on the dashboard — there's no real payment-processing data to compute one from honestly. No customer portal or customer-facing accounts/login. No SMS or email automation (status/payment changes are silent — no notification is sent to the customer). No invoice/PDF generation. Order line items support text/quantity/price only — no file attachments, no line-item-level intake forms (the existing `intakeRequired`/`intakeFormSlug`/`intakeStatus` columns remain unpopulated, same as every prior phase). None of this is scheduled here — recorded so a future phase doesn't have to re-derive the gap list from scratch.
 
-### Phase 19 (planned, not started)
+### Phase 19 (Phase 19A, 19B, and 19C complete — see below)
 
-The next major phase after this business-operations admin work is expected to bring: **Media Library video uploads** (the `media_assets` schema is already video-ready — `type: "image" | "video"`, format-agnostic `mimeType`/`sizeBytes` — but no upload path or player exists yet), **video playback** on the storefront/portfolio (`ProductMedia`/`ProjectGallery` currently only render a video's poster image with a "VIDEO" badge, never actual playback), **homepage/portfolio/service video support** more broadly, and **admin-controlled website animations/motion**. Nothing for Phase 19 is touched, planned in code, or scaffolded during Phase 18 — this is a forward-looking note only.
+This section originally noted that the next major phase would bring Media Library video uploads. That work is now done — see "Video Media Foundation (Phase 19A)" below for the complete architecture. Phase 19B then wired that foundation into the first real public consumer — Portfolio gallery video — see "Portfolio Video Support (Phase 19B)" below. Phase 19C extended the same pattern to Service galleries — see "Service Gallery Video Support (Phase 19C)" below. See "## Roadmap" (near the end of this file) for the full, current, authoritative phase timeline — Phase 19 itself is now split into 19D-1 (Motion System, the active phase) and 19D-2 (Cinematic Homepage Hero Media), followed by Phase 20 (Big Red Brain + AI Creative Studio), Phase 21 (Security Hardening + Penetration Testing — a required pre-launch gate), and Phase 22 (Production Polish + Launch Readiness).
+
+## Video Media Foundation (Phase 19A)
+
+**Status: the Media Library supports real video assets end to end — upload, storage, server-side validation, preview, poster images, replacement, and usage reporting — live-tested against your own real upload.** This is deliberately **infrastructure and admin support only**: no public page rendered video yet as of this phase, no animation controls exist, no AI video generation exists. See "Portfolio Video Support (Phase 19B)" below for the first real public consumer of this foundation.
+
+### Supported formats and size limit
+
+**MP4 (`video/mp4`) and WebM (`video/webm`) only** — the two formats every modern browser plays natively with `<video>`, no plugin. MOV/AVI/MKV are rejected regardless of what the browser declares, matching the exact allowlist philosophy already established for images (nothing outside the allowlist can ever pass — there is no denylist to keep complete).
+
+`MAX_VIDEO_UPLOAD_BYTES = 100 MB` (`src/data/media.ts`) — a deliberate starting policy, not a platform ceiling: comfortably covers a 60–90 second, reasonably-compressed 1080p promo/event-recap clip (the realistic content this business actually produces) without inviting multi-minute raw phone-camera dumps that would hurt upload UX and page performance. `MAX_IMAGE_UPLOAD_BYTES` stays exactly `8 MB`, completely untouched — the two limits are independent constants, never shared or silently reused across media types.
+
+### Architecture — browser-direct-to-Blob, not a Server Action relay
+
+Video upload is architecturally different from image upload, and deliberately so:
+
+```
+Browser
+  → authenticated POST /api/media/video-upload-token
+  → short-lived, scoped client upload token (allowedContentTypes + maximumSizeInBytes baked in)
+  → browser uploads directly to Vercel Blob (bytes never pass through our server)
+  → authenticated confirmVideoUploadAction Server Action (receives only the resulting blob URL/pathname)
+  → server fetches a byte range back from that URL and validates the REAL bytes
+  → media_assets row created only if validation passes
+```
+
+**Why not the image path's Server Action body-relay**: a 100 MB video would either force `next.config.ts`'s Server Action `bodySizeLimit` to be raised globally (affecting every action in the app, not just this one — explicitly rejected) or push a huge request through a serverless function's memory/duration budget for no benefit. Images stay exactly as they were — 8 MB is comfortably within Server Action territory, and that proven, simple, working path was never touched.
+
+`POST /api/media/video-upload-token` (`src/app/api/media/video-upload-token/route.ts`) issues the token via `@vercel/blob/client`'s `handleUpload()`, constraining `allowedContentTypes: ["video/mp4", "video/webm"]` and `maximumSizeInBytes` server-side, before the browser ever receives a token. It uses a new `getAdminUserOrNull()` (`src/server/require-admin-user.ts`) rather than `requireAdminUser()` — this is a JSON API consumed by the `@vercel/blob` client SDK, not a page; `requireAdminUser()`'s redirect-on-failure behavior would send the SDK's internal `fetch()` a 307 to `/admin/login` instead of a clean 401 it can actually surface as an error. Both functions share the same core authorization lookup (`role`/`active` re-read from `admin_users` on every call, never trusted from the session) — only the failure behavior differs.
+
+**Why the database write doesn't happen via `handleUpload()`'s `onUploadCompleted` callback**: that callback is a server-to-server webhook — Vercel's infrastructure calls back to a publicly reachable URL, which a local `next dev` server cannot receive without a tunnel. Since both automated testing and real manual acceptance testing need to work locally, the browser instead calls a normal Server Action (`confirmVideoUploadAction`/`confirmVideoReplaceAction`) once `upload()` resolves — this works identically in local dev, preview, and production, and still independently calls `requireAdminUser()`.
+
+### `BLOB_READ_WRITE_TOKEN` — a real, discovered requirement, added deliberately
+
+**A genuine defect was found and fixed during real acceptance testing, not assumed away**: `@vercel/blob@2.6.1`'s `handleUpload()` resolves its credentials via a narrower internal function (`getReadWriteBlobTokenFromOptionsOrEnv`) than the plain `put()`/`del()` functions already used elsewhere in this codebase (`resolveBlobAuth`, which supports OIDC via `VERCEL_OIDC_TOKEN` + `BLOB_STORE_ID`). `handleUpload()`'s credential resolver has **no OIDC fallback at all** — it only accepts an explicit `token` option or `process.env.BLOB_READ_WRITE_TOKEN`, confirmed by reading the actual compiled source in `node_modules/@vercel/blob`, not assumed from documentation. Every attempt to generate a client token failed with `"Vercel Blob: No read-write token found..."`, surfaced to the browser as the SDK's generic `"Failed to retrieve the client token"` — this was root-caused by direct source inspection before any code was touched.
+
+**The fix required zero application code changes** — `handleUpload()` already auto-reads `process.env.BLOB_READ_WRITE_TOKEN` when no `token` option is passed, and the route never passed one. `BLOB_READ_WRITE_TOKEN` was added manually via the Vercel dashboard/CLI to **Development, Preview, and Production** for this project, scoped to the existing **BigRedMedia** store (confirmed via `vercel blob get-store` — there is exactly one Blob store on the account, `BigRedMedia (store_CguB3jAZSflfUnrr)`, base URL matching the hostname already allow-listed in `next.config.ts`; no second store was created). It is **server-only** — never prefixed `NEXT_PUBLIC_`, never referenced in any client component, never sent to the browser. The only thing that ever reaches the browser is the short-lived, narrowly-scoped client token `handleUpload()` generates from it — confirmed structurally distinct from the long-lived token itself during testing (see "Real acceptance test" below). Its value is never written to source code, logs, commit messages, or this file — only the environment variable **name** is referenced anywhere in this codebase or its documentation.
+
+### Server-side post-upload validation — the real content check
+
+`src/server/validate-video-upload.ts` mirrors `validate-media-upload.ts`'s exact philosophy: real magic-byte sniffing, never trusting the browser's declared filename/Content-Type. Since video bytes never pass through the server as a single buffer, validation operates on a **byte prefix**: `fetchAndValidateUploadedVideo(url)` fetches only the first ~512 bytes of the now-public Blob object via a ranged request (`Range: bytes=0-511`), sniffs real magic bytes (MP4's `ftyp` box signature at byte offset 4–7; WebM's EBML magic number plus a bounded search for the `webm` DocType string within the first 512 bytes — documented honestly as a practical, not perfect, WebM/Matroska distinguisher, since both share the same EBML magic number and full EBML tree parsing was deliberately avoided as exactly the kind of fragile hand-written container parser this project avoided for duration parsing too). **Total file size is read from the response's real `Content-Range` header** (e.g. `bytes 0-511/9733983` — the number after `/`), never from a client-claimed size. A file that fails either check is deleted from Blob and **never** gets a `media_assets` row — invalid uploads never become active Media Library records, by construction.
+
+The upload token's `allowedContentTypes` constraint (enforced by Blob's own infrastructure before upload) and this post-upload byte-sniff are two independent layers: `allowedContentTypes` only constrains the *declared* content type, not the real bytes, so the post-upload check remains the real backstop against a file whose actual content doesn't match what was declared.
+
+### Video replacement — same permanent-ID philosophy, extended with a type guard
+
+`confirmVideoReplaceAction` mirrors `replaceMediaAssetAction`'s (image) exact pattern: the permanent `media_assets.id` never changes, only `storageKey`/`url`/`mimeType`/`sizeBytes`/`updatedAt` are updated on the existing row, and the **previous Blob object is deliberately left in place, not deleted** — unchanged from Phase 15's recoverability-over-immediate-cleanup policy. `posterMediaAssetId` is untouched by a video replace, so an existing poster relationship survives.
+
+**Both replacement directions are now explicitly guarded**: `replaceMediaAssetAction` (image) rejects if `existing.type !== "image"`; `confirmVideoReplaceAction` (video) rejects if `existing.type !== "video"`. Neither silently allows a cross-type replacement — an image can never be replaced by a video, and a video can never be replaced by an image, each with a readable, explicit guard rather than relying only on the format validator's implicit rejection of the wrong bytes.
+
+### Poster architecture (`posterMediaAssetId`)
+
+Schema (migration `0011_stale_jubilee.sql`, already applied — see "Migrations" below): `media_assets.posterMediaAssetId` — nullable, **self-referencing** foreign key to `media_assets.id` (required Drizzle's self-reference pattern, `references((): AnyPgColumn => mediaAssets.id, ...)`), `ON DELETE SET NULL`. Archiving or (hypothetically) deleting the poster image can never cascade-delete or block deletion of the video that references it — the video row simply loses its poster pointer, exactly like every other optional media reference in this schema. There is deliberately **no DB-level constraint restricting the referenced row to `type = 'image'`** — that rule lives at the application layer (`setMediaAssetPosterAction`), matching how every other "which kind of asset belongs here" rule in this codebase already lives in validation code, not SQL.
+
+`setMediaAssetPosterAction` re-verifies **fresh, inside the transaction**, that a submitted poster: exists, is `type: "image"`, and is `status: "active"` — never trusting that the picker UI's own filtering was the only gate, so a stale page, a race with someone else archiving the image, or a hand-crafted request are all caught identically. Reuses the existing `media.updated` audit action (not a new video-only event) with metadata limited to `{fields: ["posterMediaAssetId"]}` — no filenames, URLs, or asset IDs, matching the exact minimal-metadata convention `updateMediaAssetAction`'s alt/caption edits already established.
+
+`MediaPosterField.tsx` (the admin UI) only ever offers **active image** assets, sourced from the newly-generalized `getActiveMediaAssetsForPicker(["image"])` — but the server-side re-check above is the real authority, not this UI filter.
+
+### Media pickers — generalized, but no existing picker was widened automatically
+
+`getActiveImageAssetsForPicker()` — the one function every existing picker (Product media, Brand logos) already called — is now a thin, behavior-identical wrapper over a new `getActiveMediaAssetsForPicker(allowedTypes: MediaAssetType[])`. Every existing caller is unaffected: still image-only, unchanged. The only new caller is the poster field, which explicitly passes `["image"]`. This is the mechanism that keeps a video from ever being selectable into a component that only knows how to render `next/image` — the picker offering it simply never appears, per field, by explicit choice, not automatically widened.
+
+### Usage scanning — poster relationships are now reportable
+
+`findAssetsUsingAsPoster(imageId)` (`src/server/queries/media.ts`) — a plain column-equality scan (`posterMediaAssetId = $1`, not a JSONB containment query like the product/service/portfolio scans, since this FK is a scalar column) — reported on an image asset's own "Used by" section on `/admin/media/[id]`, alongside existing product/service/portfolio references. Existing usage-scan functions are completely unmodified.
+
+### Media Library UI
+
+`/admin/media`'s grid: a video card shows its **poster image** (once one is set) with a small "Video" badge overlay, or a generic text placeholder if no poster exists yet — **never an autoplaying `<video>` element in the grid**. `/admin/media/[id]`'s detail page renders a real `<video controls playsInline preload="metadata" poster={...}>` for video assets — **no `autoplay`** — plus the poster picker, replace form (routed to `VideoReplaceForm` for video assets, the original `MediaReplaceForm` for images), and the extended "Used by" block. `MediaFilterBar`'s existing type filter (`image`/`video`) needed no changes — it already read from the schema's real `MEDIA_ASSET_TYPES`.
+
+### Audit events — no new video-only actions
+
+`media.uploaded`, `media.updated`, `media.archived` are reused exactly as they already applied to images — a video upload is still `media.uploaded` with `{filename, mimeType, sizeBytes}` metadata; a video replace is still `media.updated` with `{replaced: true, previousStorageKey}`; a poster change is `media.updated` with `{fields: ["posterMediaAssetId"]}`.
+
+### Migration `0011_stale_jubilee.sql`
+
+One additive change: `media_assets.posterMediaAssetId` (nullable `text`, self-referencing FK, `ON DELETE SET NULL`). Generated, reviewed, and explicitly approved via the full disclosure protocol (complete SQL, column type/nullability/default, destructive-operation analysis, confirmation 0000–0010 remained byte-unchanged, confirmation the migration hadn't been applied, confirmation no real data was touched) before `db:migrate` ever ran. **Migrations 0000–0010 were never rewritten** — 0011 is a new, additive-only file, per the project's standing migration-immutability rule.
+
+### Real acceptance test — what was genuinely verified
+
+Using your own real upload (not seeded, not synthetic): a real MP4 was uploaded through the real browser-direct-to-Blob flow, a real poster was selected from your existing real image asset, and the video was then replaced with a second real file — all through the real admin UI, not a script. Read-only verification directly against Neon and Blob afterward confirmed every claim rather than assuming success:
+
+- **Exactly 1 legitimate video asset** — `type: video`, `status: active`, `mimeType: video/mp4`, final size **9,733,983 bytes**.
+- **Poster relationship**: `posterMediaAssetId` correctly references your legitimate existing image asset (`status: active`, `type: image`) — confirmed both from the video's own row and from `findAssetsUsingAsPoster()` correctly reporting the relationship from the image's side.
+- **Replacement preserved the permanent `media_assets.id`** — confirmed by there being exactly one video row throughout, with all three of its audit events referencing the same single `entityId`.
+- **Replacement changed the underlying Blob storage key** — confirmed directly from the stored audit history itself, not inferred: the replace event's own metadata recorded the *previous* `storageKey`, which differs from the row's current one.
+- **The poster relationship survived the replacement** — `posterMediaAssetId` was set before the replace and remained set afterward, untouched by `confirmVideoReplaceAction` (which never touches that column).
+- **The final Blob object is genuinely live and readable** — a real fetch against its URL returned `200`, with `Content-Length` matching the stored `sizeBytes` exactly.
+- **Exactly 3 legitimate audit events** for this video (`media.uploaded`, `media.updated` poster-set, `media.updated` replaced) — `audit_log` moved from 37 → **40** rows, precisely those three, all attributed to the real owner account, metadata free of credentials/tokens/URLs.
+- **No duplicates**: 2 total `media_assets` rows exist — the 1 original real image plus this 1 real video — never more.
+
+One real defect was found and fixed along the way, documented above rather than glossed over: `handleUpload()`'s OIDC gap, discovered specifically because this real upload attempt failed with `"Failed to retrieve the client token"` before the fix.
+
+### What's still not built this phase (documented, not silently deferred)
+
+**As true at the end of Phase 19A, before Phase 19B started:** no public page rendered video yet — `ProductMedia`/`ProjectGallery`/`ServiceHero` etc. still only ever rendered a video's poster image with a "VIDEO" badge. No `VideoMedia` public component had been built yet. No `Product.media`/`ServiceImage`/`ProjectImage` type widening for video beyond what already existed. **Phase 19B (below) has since built `VideoMedia` and widened `ProjectImage` specifically — for Portfolio galleries only.** `Product.media` and `ServiceImage` remain exactly as they were at the end of Phase 19A — still no `type` field, still no video rendering — see "Portfolio Video Support (Phase 19B)" → "What's still not built."
+
+No automatic poster-frame generation (poster selection is manual, from an already-uploaded image, exactly as approved). No orphaned-Blob cleanup for superseded replace targets (same documented, deferred Phase 15 policy, now also applying to video). No transcoding, no adaptive bitrate streaming, no automatic duration extraction (deferred — the reliable, dependency-free approach identified is a browser-native `HTMLVideoElement.duration` read, not yet implemented). No animation controls, no AI video generation, no Mux/Cloudinary integration.
+
+## Portfolio Video Support (Phase 19B)
+
+**Status: complete — Portfolio gallery items can now be real Media Library videos, rendered publicly with a genuine native `<video>` player, live-tested against your own real SP Juices video.** This is the first real public consumer of Phase 19A's Media Library video foundation. Deliberately scoped to **Portfolio galleries only** — the hero image field, Services, Product, and the homepage are untouched; see "What's still not built" below.
+
+### `ProjectImage` — additive, no migration
+
+`src/data/projects.ts`'s `ProjectImage` type gained two optional fields, requiring **no database migration** (`portfolio_project_versions.gallery` is a schema-less JSONB column — Postgres enforces nothing about its shape, so every gallery item authored before this phase, which has neither field, remains perfectly valid):
+
+```ts
+type ProjectImage = {
+  type?: "image" | "video";   // absent/undefined means "image" — the default, unchanged behavior
+  src: string;
+  alt: string;
+  lightBackground?: boolean;    // image-only presentation concept — never read for a video item
+  mediaAssetId?: string;      // the PERMANENT reference — same id/slug-style split as every other Media Library link in this codebase
+  posterSrc?: string;        // READ-TIME ONLY — see below
+};
+```
+
+A `type: "video"` item **must** carry `mediaAssetId` — there is no manual/local video path support, matching how every other Media-Library-only asset type already works here (enforced in `projects.validate.ts`, see below). `mediaAssetId` is the permanent link; `src` is a resolved, replaceable value — replacing the video's file in the Media Library propagates to every project referencing it automatically, the exact same guarantee already proven for `Product.media`/`ServiceImage`/brand logos.
+
+### `posterSrc` — read-time only, and the real bug that proved why
+
+`posterSrc` is populated **exclusively** by `resolveProjectsMedia()` in `src/server/queries/portfolio.ts`, on every read, by resolving a video asset's own `posterMediaAssetId` (Phase 19A) to that poster's *current* URL. It is **never** authored by the admin form and **must never** be written into `portfolio_project_versions.gallery`'s JSONB. A video with no poster configured simply keeps `posterSrc` undefined — no fallback image, no broken state, `VideoMedia` just renders without a `poster` attribute.
+
+**This was not just a design rule — a real acceptance-test bug proved it needed active enforcement.** The admin edit form seeds its local gallery-editor state from `getPortfolioEntityForAdmin()`, which — like every public read — returns the *already-resolved* gallery (posterSrc attached). An admin who saves the draft again after that initial load (a completely ordinary edit, unrelated to the video itself) silently wrote `posterSrc` back into storage, because the client form had no way to know that field wasn't supposed to persist. This was caught on the real SP Juices draft (see "Real SP Juices acceptance test" below), not invented speculatively.
+
+**The fix: `sanitizeGalleryForStorage()`** (`src/data/projects.ts`), the one place that decides what's allowed to reach the database. Called from `src/server/mutate-portfolio.ts`'s `contentToColumns()` — the single shared helper both `createPortfolioAction` and `savePortfolioDraftAction` go through — so both the create and every future draft-save path are covered by one choke point, not two separately-maintained copies. It rebuilds each gallery item via an **explicit allowlist** (`src`, `alt`, and only-if-present `type`/`mediaAssetId`/`lightBackground`) rather than a `delete image.posterSrc` — a deliberate choice so any *future* runtime-only field added to `ProjectImage` is stripped by default too, without needing to remember to update a denylist. The server is the authority here, never the client: a client could in principle submit any stale or fabricated field, and the write path silently discards anything not on the allowlist.
+
+`publishPortfolioAction` needed no separate change — it only ever copies an already-persisted (now-clean-by-construction) draft row onto the published row.
+
+### `VideoMedia` — the public player
+
+`src/components/VideoMedia.tsx` — a small, presentational-only component with **zero dependency on any admin code** (imports nothing from `src/components/admin` or `src/server`), receiving only already-resolved public data:
+
+```tsx
+<video
+  src={src}
+  poster={posterSrc}
+  controls
+  playsInline
+  preload="metadata"
+  aria-label={alt}
+>
+  Your browser doesn&apos;t support video playback.
+</video>
+```
+
+`controls`, `playsInline`, and `preload="metadata"` are always on; `autoplay`, `muted`, and `loop` are **never** forced — a deliberate, explicit design decision, not an oversight, matching the "no autoplay anywhere in this codebase" precedent Phase 19A's own detail-page `<video>` preview already established. `alt` becomes `aria-label` since `<video>` has no native `alt` attribute. Future per-video presentation controls (autoplay/muted/loop/object-fit, etc.) are intentionally **not** implemented yet — the data model already supports adding them later as more optional props, no redesign required.
+
+### `ProjectGallery` — mixed image/video, same responsive grid
+
+`src/components/ProjectGallery.tsx` branches per item: `type === "video"` renders `VideoMedia`, otherwise the existing `next/image`. Both share the exact same `.project-gallery-item` grid cell — one new CSS rule, `.project-gallery-item video{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:var(--black)}`, mirrors the letterboxed `object-fit:contain` treatment images already had, so a video occupies an identical, fully responsive cell shape at every breakpoint with no separate media query needed. `lightBackground` stays an image-only concept — a video item's container always keeps the default black letterboxing, never reads `lightBackground`.
+
+### Admin gallery picker — image and video, hero stays image-only
+
+`PortfolioGalleryEditor.tsx`'s "Choose from Media Library" picker now offers **both** active image and active video assets (`getActiveMediaAssetsForPicker(["image", "video"])`) — a deliberate widening scoped to the gallery only. **The hero image field (`PortfolioHeroField.tsx`) was not touched and stays image-only** (`getActiveImageAssetsForPicker()`, unchanged) — no public hero video exists or was requested. Selecting a video sets `mediaAssetId` + `type: "video"`; selecting an image preserves the exact pre-Phase-19B shape (no `type` field at all) — "preserve existing image behavior" taken literally, not just in spirit.
+
+**Poster thumbnail + "Video" badge — a real UX bug, found and fixed.** The first version of this picker rendered a video tile as bare text reading "Video," with no thumbnail, while the video's own poster image sat in the same grid as a normal, fully-visible picture. A real user, during acceptance testing, clicked the poster's picture-looking tile believing it *was* the video — and the wrong asset (`mediaAssetId` pointing at the poster image, no `type` set) got saved. The fix: the picker now resolves each video's poster URL server-side (`new/page.tsx`/`[id]/edit/page.tsx` batch-fetch via `getMediaAssetsByIds`) and shows that poster image with a small "Video" badge overlay — reusing `/admin/media`'s own existing `.admin-media-card-video-badge` pattern from Phase 19A verbatim, not a new visual language. A video with no poster set still falls back to text, now reading `"Video (no poster set)"` for clarity. This was a genuine, confirmed root cause — not a rendering/CSS defect in the public pipeline, which was correct throughout.
+
+### Validation — sync structural, then async real-data
+
+Two layers, matching the exact split already established for `relatedServiceSlug` in Phase 17:
+
+- **`projects.validate.ts`** (synchronous, no database access): a `type: "video"` item must carry `mediaAssetId`; the local-path/folder check is skipped entirely for video items (a video's `src` is always a resolved Media Library CDN URL, never a local path).
+- **`mutate-portfolio.ts`**'s `validateVideoGalleryReferences()` (async, real Neon read): for every `type: "video"` gallery item, independently verifies the referenced asset exists, is genuinely `type: "video"`, and is `status: "active"` — never trusting that the picker's own "active videos only" filtering was the only gate, since a stale page, a race with someone archiving the asset mid-edit, or a hand-crafted request could all bypass client-side filtering. Called from `createPortfolioAction` and `savePortfolioDraftAction` — **deliberately not called from `publishPortfolioAction`**, which promotes already-validated draft content rather than accepting new input, matching the literal "rejected for NEW draft saves" requirement.
+
+### Archived assets — the existing Media Library precedent, reused unmodified
+
+No new behavior was invented here — Phase 15/19A's existing rule was simply reapplied: **archiving a referenced video or poster never breaks an existing gallery reference.** `resolveProjectsMedia()` resolves by id with no status filter, so a project that already references an archived video (or whose video's poster was later archived) keeps rendering exactly as before — only *new* draft saves reject an archived video (via the async check above). Archiving only removes an asset from future picker selections (`getActiveMediaAssetsForPicker()` filters `status = 'active'`); it never touches, deletes, or hides an already-referenced asset's Blob or its public rendering.
+
+### Usage scanning
+
+`findProjectsReferencingMediaAsset()` (`src/server/queries/media.ts`, unmodified since Phase 17) needed **zero code changes** to detect a video reference — confirmed, not assumed: Postgres's JSONB containment operator (`gallery @> [{"mediaAssetId": "..."}]`) matches on the presence of that key-value pair regardless of what other fields (`type`, `posterSrc`, etc.) are also present on the item. `/admin/media/[id]`'s "Used by" block for the poster image also correctly reports the video via `findAssetsUsingAsPoster()` (Phase 19A, also unmodified).
+
+### Draft → preview → publish isolation
+
+Unchanged from the Services + Portfolio Admin architecture Phase 17 established — Save Draft only ever writes the `draft` version row; the public site and the published row are untouched until an explicit Publish. `/admin/portfolio/[id]/preview` reuses the exact real public components (`ProjectGallery` included) against the draft's resolved content, so a video previewed there is provably what the public page will render once published, not a reconstruction.
+
+### Real SP Juices acceptance test — the full, honest history
+
+Using your own real project and your own real video/poster (both uploaded in Phase 19A's own acceptance test): you added the video to SP Juices' draft gallery, previewed it, and hit the two real bugs documented above in the process — first the picker-tile mis-click (the poster image got added instead of the video, confirmed by reading the raw draft JSONB directly rather than assumed), then, after correcting that, the `posterSrc`-persistence bug (confirmed the same way, on the corrected draft, before you clicked Publish). Both were root-caused, fixed, and the already-contaminated draft row was corrected via a one-off script that reused the real, now-exported `sanitizeGalleryForStorage()` — verified byte-for-byte to change *only* the removal of `posterSrc`, nothing else, before being applied. You then re-saved and published for real. Final, fully-verified state: SP Juices' permanent project id unchanged throughout; draft and published content synchronized; the video present exactly once, `mediaAssetId` correct, `type: "video"`; zero `posterSrc` anywhere in either raw JSONB, confirmed by a full scan across all 8 `portfolio_project_versions` rows (all 4 projects, draft + published) finding no other contaminated row; the poster resolved correctly at read time from the video's `posterMediaAssetId`; all 13 original SP Juices images intact, in original order, with `lightBackground: true` still correct on the logo item; the accidental poster-image item gone; usage scanning correctly reporting the reference from both the poster's and the video's side; both Media Library assets still `active`; no duplicate rows anywhere; a complete, correctly owner-attributed audit trail (`portfolio.draft_saved` ×5, `portfolio.published` ×2 — the first publish predates the fixes, the second is the real, final one); and every other real record in the database (Brand `#E70810`, the real Branding service edit, the real Product Packaging edit, Custom Graphic Design, the homepage, 7 Services, the other 3 Portfolio projects, leads/customers/notes/orders) confirmed completely unaffected. **This is real, live, currently-published content — not a placeholder to revert.**
+
+### What's still not built
+
+Services and Product galleries/media are untouched — `ServiceImage` and `Product.media` still have no `type` field and cannot reference a video, by explicit scope decision, not oversight. No homepage video. No hero-image video (the hero picker stays image-only, unwidened, on purpose). No animation, autoplay, or motion controls of any kind (see "Phase 19C" below). No AI-generated video of any kind. No testimonial-reel or case-study-video-specific UI beyond the generic gallery item. No `object-fit`/aspect-ratio override per video — every video shares the same `.project-gallery-item` letterboxed treatment images already use.
+
+### Roadmap notes (documentation only — nothing here is scheduled or implemented)
+
+- **Services video** — done. See "Service Gallery Video Support (Phase 19C)" below.
+- **Homepage video** — inspected in detail during Phase 19C's architecture report; deliberately not started. See "Service Gallery Video Support (Phase 19C)" → "Homepage findings" below for the full, honest writeup of what's there today and why it was deferred, and see "## Roadmap" (near the end of this file) for Phase 19D-2, the phase now scoped to build it.
+- **AI-generated branding videos** — the original motivating use case named when Phase 19B's architecture was first approved (an eventual Big Red Brain / AI Creative Studio capability to generate on-brand promotional video). Nothing about that generation pipeline exists yet — Phase 19B/19C only built the places such a video would eventually be *displayed* (a real Media Library video asset, attached to a Portfolio or Service gallery item, rendered by `VideoMedia`). The display path is real, proven twice now, and requires zero changes to accept an AI-generated video instead of a human-uploaded one — it would enter through the exact same Media Library upload/poster/replace path. The generation path itself is Phase 20 future work — see "## Roadmap" for the full, current, authoritative Phase 19D-1/19D-2/20/21/22 timeline; this note is intentionally short so it can't drift out of sync with that section.
+- **Testimonial reels** — a named future use case for the same Portfolio/Services video gallery — short client testimonial clips. No dedicated schema or UI exists; today's generic video gallery item is the only building block, and it's sufficient to hold one manually uploaded via the Media Library today.
+
+## Service Gallery Video Support (Phase 19C)
+
+**Status: complete — Service gallery items can now be real Media Library videos, rendered publicly through a brand-new `ServiceGallery` component.** Direct architectural mirror of Phase 19B's Portfolio work, with one deliberate exception: `Service.gallery` had **no public renderer at all** before this phase (confirmed by inspection, not assumed) — Phase 19C had to build `ServiceGallery` from scratch, not just widen an existing one. Service hero stays image-only, unchanged. Homepage video was explicitly investigated and explicitly deferred — see "Homepage findings" below.
+
+### `ServiceImage` — additive, no migration, deliberately NOT shared with `ProjectImage`
+
+`src/data/services.ts`'s `ServiceImage` gained the same two optional fields Phase 19B added to `ProjectImage`, requiring **no migration** (`service_versions.gallery` is schema-less JSONB, same as Portfolio):
+
+```ts
+type ServiceImage = {
+  type?: "image" | "video";
+  src: string;
+  alt: string;
+  mediaAssetId?: string;
+  posterSrc?: string;   // READ-TIME ONLY, never persisted — see below
+};
+```
+
+**A separate `sanitizeServiceGalleryForStorage()` function was written in `src/data/services.ts`, not a shared/generalized one with Portfolio's `sanitizeGalleryForStorage()`.** This was an explicit decision, not an oversight: Services and Portfolio are intentionally parallel but independently evolving content systems (mirrored files throughout this codebase — `mutate-service.ts`/`mutate-portfolio.ts`, `ServiceGalleryEditor.tsx`/`PortfolioGalleryEditor.tsx`, etc. — never a single parameterized shared implementation), and `ServiceImage` has never had Portfolio's `lightBackground` field. A shared sanitizer would either need to special-case that difference or silently allow a field one system doesn't have. Same explicit-allowlist discipline as Portfolio's version (`{src, alt}` plus only-if-present `type`/`mediaAssetId` — never a `delete`), applied **from day one** in this phase specifically because Phase 19B proved the round-trip risk is real, not hypothetical: `getServiceEntityForAdmin()` already returns already-resolved (posterSrc-attached) data to the edit form, so the exact same mechanism that contaminated the real SP Juices draft was a live risk here the moment video was introduced. Wired into `mutate-service.ts`'s `contentToColumns()` — the one shared choke point both `createServiceAction` and `saveServiceDraftAction` go through.
+
+### Poster resolution
+
+`resolveServicesMedia()` in `src/server/queries/services.ts` gained the identical second resolution pass `resolveProjectsMedia()` already has: resolve every `mediaAssetId` to its live asset, then for any resolved video with its own `posterMediaAssetId` (Phase 19A), batch-resolve that too and attach `posterSrc` — a read-time-only enrichment, never written back to `service_versions.gallery`'s JSONB.
+
+### Validation — sync structural, then async real-data
+
+Same two-layer split as Portfolio: `services.validate.ts` requires `mediaAssetId` on any `type: "video"` item (no manual/local video path support) and skips the local-path/folder check for video items; `mutate-service.ts`'s `validateVideoGalleryReferences()` (async, real Neon read) independently verifies a referenced asset exists, is genuinely `type: "video"`, and is `status: "active"` — called from `createServiceAction`/`saveServiceDraftAction` only, never from `publishServiceAction`, which promotes already-validated draft content.
+
+### `ServiceGallery` — the missing public renderer, now built
+
+`src/components/ServiceGallery.tsx` is new. It reuses `VideoMedia` (no second video player component exists or was built) and reuses **Portfolio's own `.project-gallery-grid`/`.project-gallery-item` CSS classes verbatim**, rather than duplicating near-identical `.service-gallery-*` rules — the same "reuse an existing generic pattern" precedent already established when the Store grid reused `.portfolio-filters`/`.portfolio-filter` CSS unmodified. `ServiceImage` has no `lightBackground` concept, so unlike `ProjectGallery` there's no light/dark class branch. Wired into both `/services/[slug]/page.tsx` and `/admin/services/[id]/preview/page.tsx`, each with the identical `{gallery && gallery.length > 0 && <ServiceGallery .../>}` conditional Portfolio already uses.
+
+### Admin picker — image and video, hero stays image-only, same anti-mis-click fix applied proactively
+
+`ServiceGalleryEditor.tsx` now offers both active image and active video assets (`getActiveMediaAssetsForPicker(["image", "video"])`); `ServiceHeroField.tsx` was **not touched** and stays on `getActiveImageAssetsForPicker()`. The picker renders a video tile using its own poster thumbnail (with a "Video" badge overlay, reusing Phase 19A's `.admin-media-card-video-badge`) when a poster is set, or a `"Video (no poster set)"` text fallback otherwise — this is Phase 19B's real, user-discovered picker-tile-confusion fix, applied here **proactively from first implementation** rather than waiting to rediscover the same bug. `ServiceForm.tsx` gained the same `mediaAssets`/`galleryMediaAssets` prop split `PortfolioForm.tsx` already has; both admin Service pages (`new`, `[id]/edit`) resolve poster URLs server-side before handing the picker list to the form, mirroring Portfolio's exact pattern.
+
+### Archived assets and usage scanning
+
+Same reused, unmodified precedent: an already-referenced archived video/poster keeps rendering (`resolveServicesMedia()` resolves by id with no status filter); only *new* draft saves reject an archived video. `findServicesReferencingMediaAsset()` (`queries/media.ts`, unchanged since Phase 17) needed **zero code changes** — verified by automated regression test, not just inspection, that its existing JSONB containment query correctly detects a video gallery reference exactly like Portfolio's equivalent already proved in Phase 19B.
+
+### Draft → preview → publish isolation
+
+Unchanged from the Services Admin architecture Phase 17 established — no new isolation logic needed.
+
+### Automated regression testing
+
+20 checks (the 16 requested items, several split into sub-assertions, plus a backward-compatibility spot check), run against real Neon query functions using temporary `test-phase19c-`-tagged media assets and one temporary service — **20/20 passed on the first run**. Coverage included: existing image galleries remain valid, video addition to a draft, draft preview resolving both video and poster, the public service staying unaffected before publish, publish correctly copying the video reference, the public page rendering the video after publish, `posterSrc` never persisting (checked at both create and publish time), the hero picker staying image-only, the gallery picker correctly offering both types while excluding archived assets, an archived video being rejected for a new save, a previously-published archived reference continuing to resolve, video/poster replacement propagating correctly without touching frozen JSONB, Media Library "Used by" correctly reporting the Service reference from both draft and published rows, no duplicate rows, and a snapshot-diff confirming zero unrelated changes to any real Portfolio row throughout. All temporary media assets, the temporary service, its versions, and its audit rows were deleted immediately after — confirmed via the script's own cleanup step.
+
+### Real-data safety verification (read-only, after testing)
+
+Confirmed unchanged: `media_assets` at 2 (the two real Phase 19A/19B assets only), `audit_log` at the same count as before this phase's automated testing began, `BRCP-1013` present, 1 lead/1 customer/4 notes, Brand `#E70810`, the real Branding service summary intact with `gallery: null` (never touched by this phase — no real Service was edited during implementation or testing), Product Packaging's real summary intact, SP Juices' real video reference still present and intact, Custom Graphic Design still published, homepage content unchanged, 7 Services/4 Portfolio projects. All 7 real services' `gallery` columns confirmed `null` on both draft and published rows — exactly the pre-phase state, since no real Service was touched during implementation (only your own upcoming manual acceptance test will do that).
+
+### Real Graphic Design acceptance test — what was genuinely verified
+
+Using your own real Service (`Graphic Design`, permanent id `service_fe4372a3-0936-4ee0-b601-66f4e63a5e99`) and your own real, existing video/poster (the same pair already proven in Phase 19B's SP Juices acceptance test): you opened its edit form, added the video via the corrected picker (poster thumbnail + "Video" badge — no mis-click, unlike the first Portfolio attempt), saved the draft, confirmed the live public page was unaffected, previewed and played the video, and published. Two rounds of independent read-only verification (immediately after your acceptance test, and again immediately before this commit) both confirmed, directly against Neon: the permanent service id unchanged throughout; draft and published content byte-identical; the video present exactly once with the correct `mediaAssetId` and `type: "video"`; zero `posterSrc` anywhere in either raw JSONB (confirmed by a full scan across every stored Service gallery row, not just this one); the poster correctly resolved at read time from the video's real `posterMediaAssetId`; the hero fields (`heroImageSrc`/`heroMediaAssetId`) both still `null`, confirming the hero was never touched; `findServicesReferencingMediaAsset()` correctly reporting the reference from both the draft and published rows; the Media Library's poster "Used by" still correctly reporting the relationship; no duplicate rows anywhere; a correctly owner-attributed audit trail (`service.draft_saved` then `service.published`); zero credential/token values anywhere in `audit_log`; and every other real record in the database (the other 6 Services, all 4 Portfolio projects including SP Juices' own video, Brand `#E70810`, the real Branding and Product Packaging edits, Custom Graphic Design, the homepage, leads/customers/notes/orders) confirmed completely unaffected. **This is real, live, currently-published content — not a placeholder to revert.**
+
+### Homepage findings — investigated, documented, deliberately not implemented
+
+Phase 19C's architecture report inspected every homepage-rendering component directly (not assumed) and found: `Hero.tsx`, `Portfolio.tsx`/`ProjectCard.tsx` (the homepage "Selected work" grid), `Services.tsx`/`ServiceCard.tsx` (the homepage service rows), `Ticker.tsx`, `Manifesto.tsx`, `Statement.tsx`, `Studio.tsx`, and `ContactForm.tsx` render **zero images and zero video today, for anyone** — confirmed by grepping every `src/components/*.tsx` file for `<Image>`/`<video>` usage. The only homepage-adjacent media fields that exist at all are `homepage_content.heroImageSrc`/`heroImageAlt` (reserved since Phase 14, plumbed through the draft-save/publish mutation, but never rendered in `Hero.tsx`'s JSX and with **no admin form field** to set them) and `site_settings.ogImageSrc` (admin-editable but never rendered — no `openGraph.images` wiring exists). This means homepage video isn't a matter of widening an existing working image slot the way Portfolio's gallery already was — every candidate area would need **net-new media rendering built from scratch**, which is real design/scope work, not an additive video-support step.
+
+**This is why homepage video was explicitly out of scope for Phase 19C**, per your direction. The findings are preserved here for the upcoming motion/cinematic homepage phase to design around intentionally, rather than rediscovering them from scratch:
+
+- **Poster-first loading** — any future homepage video must show a resolved poster instantly while the video itself stays unfetched (`preload="metadata"` or `preload="none"`) until either an explicit interaction or an intentional autoplay opt-in decision is made.
+- **Mobile behavior** — `playsInline` remains mandatory to avoid iOS Safari's forced-fullscreen takeover; data usage must stay minimal by default.
+- **LCP / Core Web Vitals** — a homepage hero is very likely to *be* the LCP candidate. A future hero video must be kept from ever counting as that candidate itself (keep it visually secondary to text, or deliberately excluded from the LCP measurement path), and should be validated against a real, throttled-mobile Core Web Vitals measurement before shipping — not assumed safe.
+- **Autoplay opt-in, muted requirements, loop controls** — this phase's mandated default (`controls`, no `autoplay`, no forced `muted`, no forced `loop`) is deliberately wrong for a "cinematic background hero" look, which needs autoplay+muted (and typically loop) to read as intentional rather than as a broken, static video player sitting behind text. That tradeoff needs to be designed on purpose in the motion phase, including a real reduced-motion fallback (`prefers-reduced-motion`) and a static-image fallback for when video is skipped or fails.
+- **Cinematic background vs. inline presentation** — a genuine design decision (full-bleed background video behind the hero text vs. a bounded inline video element) that this phase deliberately did not make, since it drives the entire rendering approach.
+- **Admin controls** — whatever the eventual UI is (a single toggle, a video picker plus fallback image, autoplay/loop settings), it should follow the same Media Library-backed, `mediaAssetId`-referencing, poster-resolved-at-read-time pattern already proven twice now (Portfolio, Services) rather than inventing a third mechanism.
+
+None of this is scheduled here — recorded so the motion/cinematic homepage phase doesn't have to re-derive the homepage's actual current state (100% typographic, zero working media rendering) from scratch.
+
+### What's still not built
+
+Homepage video, in any form (see above) — no homepage video was implemented this phase. Product gallery video (`Product.media` untouched, still no `type` field). No animation, autoplay, or motion controls of any kind (Phase 19D-1 — Motion System + Admin Controls). No AI-generated video of any kind (Phase 20 — Big Red Brain + AI Creative Studio). No new CSS — `ServiceGallery` deliberately reuses Portfolio's existing gallery classes rather than introducing Service-specific ones. See "## Roadmap" (near the end of this file) for the full, current phase timeline.
+
+## Motion System (Phase 19D-1)
+
+**Status: complete — the homepage has a real, database-backed, admin-controlled entrance-animation system, live-tested against your own real Motion Admin session (Save Draft → private Preview → Publish → public homepage).** Deliberately motion-only: no homepage hero media (image/video) was added or activated this phase — that's Phase 19D-2's explicit scope, not this one's.
+
+### `motion_settings` — a fifth draft/published singleton pair, no migration surprises
+
+`src/db/schema.ts` gained `motion_settings` (migration `0012_flimsy_pepper_potts.sql` — one `CREATE TABLE` statement, no FKs, no indexes beyond the primary key), the exact draft/published two-row pattern already proven by `brand_settings` (Phase 16) and `homepage_content` (Phase 14): `id`, `status`, `intensity`, `hero_entrance`, and one preset (+ stagger boolean where applicable) column per animatable section — `services_preset`/`services_stagger`, `statement_preset`, `portfolio_preset`/`portfolio_stagger`, `studio_preset`, `process_preset`/`process_stagger` — plus `updated_at`. Every enum column is `NOT NULL` with **no SQL-level default** (a row must always be written with an explicit value for every field; only the stagger booleans default `false`) — confirmed directly against Neon's `information_schema` before this was accepted.
+
+The four enum vocabularies (`MotionSettingsStatus`, `MotionIntensity`, `MotionPreset`, `HeroEntrance`) live in **`src/data/motion.ts`**, not `schema.ts` — `schema.ts` only imports the *types* for its `$type<>()` column annotations, mirroring the exact `ServiceImage`/`ProjectImage` pattern already used twice. This keeps the runtime enum arrays safely importable from client components (the admin form, `MotionSection`) without pulling any `drizzle-orm` code into a client bundle. `MOTION_SETTINGS_FALLBACK` in that same file is byte-identical to the approved initial seed — the fallback a missing/unreachable row resolves to is never a different set of defaults than what real rows actually started as.
+
+**Bootstrap seed**: a one-time, controlled script inserted exactly two identical rows (draft + published) using the approved conservative defaults — `intensity: "standard"`, `heroEntrance: "none"`, `servicesPreset`/`portfolioPreset`/`studioPreset`/`processPreset`: `"fade_up"`, `statementPreset: "reveal"`, stagger `true` on Services/Portfolio/Process — refusing to run if any row already existed, writing **no audit event** (infrastructure bootstrap, not an admin content edit, matching the exact precedent already set by the Phase 17 seed script). The script was deleted immediately after use, per this project's standing "temp scripts are never left behind" convention.
+
+### Closed vocabulary — no path from admin (or a future AI) input to arbitrary CSS
+
+8 presets (`none`/`fade`/`fade_up`/`fade_down`/`slide_left`/`slide_right`/`scale_in`/`reveal`), 3 intensities (`subtle`/`standard`/`bold`), and Hero's own separate 2-option set (`none`/`cinematic_reveal`) — every value a closed enum string, never a duration, easing curve, transform, or pixel distance. `src/server/mutate-motion.ts`'s `validateMotionFields()` rejects anything outside these sets before a single database write happens; every rejection was live-verified during automated testing (see below), not just asserted. This is the actual security boundary the roadmap's Phase 20 Big Red Brain section leans on: a future AI suggestion can only ever choose among these known values, never write CSS.
+
+### Admin: `/admin/website/motion` + `/admin/website/motion/preview`
+
+Direct architectural mirror of Brand Controls: `MotionForm.tsx` (every control a controlled `<select>` or checkbox, per the Phase 13 rule — Motion intensity, Hero entrance, and one preset selector + stagger checkbox per applicable section), `PublishMotionButton.tsx` (fieldless, copies the current draft onto the published row), `saveMotionDraftAction()`/`publishMotionAction()` (each independently calling `requireAdminUser()`, each wrapped in a transaction alongside its `recordAuditEvent()` call). A new "Motion" tile was added to the existing `/admin/website` hub — no new top-level sidebar entry, matching how Branding was added in Phase 16. The preview route renders the **real, complete homepage component tree** (`Header`, `Hero`, `Ticker`, `Manifesto`, `Services`, `Statement`, `Portfolio`, `Studio`, `Process`, `ContactForm`, `Footer`) with only the six motion-aware sections receiving `motionVariant="draft"` — not a reconstruction, and never mixed with draft brand/content state, since this preview is only about motion.
+
+### Public motion engine — CSS transitions + one shared observer, no library
+
+`src/components/motion-observer.ts` — a single module-scoped `IntersectionObserver` instance for the entire page (confirmed by test: exactly one `new IntersectionObserver` call in the whole file), registering/unregistering target elements via a `WeakMap`, firing each callback exactly once before unobserving — entrance animations structurally cannot repeat on scroll-back. `src/components/MotionSection.tsx` exports the `useMotionEntrance()` hook (ref + a plain `visible` boolean, deliberately **not** bundled into one object alongside the ref itself — an earlier version tripped React's new `react-hooks/refs` lint rule by doing exactly that) plus a thin `<div>`-rendering convenience wrapper used by Services/Statement/Portfolio's list container/Studio/Process. **Hero is the one exception**: `HeroMotionShell.tsx` attaches the hook's ref and data attributes directly onto Hero's own existing `<section className="hero grain">`, with zero extra wrapper `<div>` — introducing one would have broken `.hero`'s `display:flex;justify-content:space-between` reliance on its exact existing children. `PortfolioGrid.tsx` (already a client component, for category filtering) calls the hook directly on its own `.project-grid` div for the same one-fewer-DOM-node reason.
+
+No animation package was installed — confirmed by both a `package.json` diff and an automated test asserting no `framer-motion`/`gsap`/`motion`/`react-spring`/`lottie` string appears anywhere in it.
+
+### Presets, intensity, and the stagger cap
+
+Every preset animates only `opacity`/`transform`/`clip-path` (never `filter`/`blur`), scaled by one of three intensity tiers via CSS custom properties (`--motion-distance`/`--motion-duration`, set once per `[data-motion-intensity]` and inherited down through the DOM — this is what lets Hero's Cinematic Reveal read the same intensity setting as every other section without re-deriving it). One fixed, restrained easing curve (`cubic-bezier(.16,.84,.44,1)`) is reused everywhere — no bounce, no overshoot, matching the explicit "premium editorial, not template" brief. `reveal` uses a `clip-path` wipe rather than a plain fade, giving Statement (its default preset) a genuinely distinct, more "unveiling" character than the fade/slide/scale family.
+
+**Stagger is capped at 6 children** — index 1 through 5 receive individually increasing 90ms-stepped delays (0/90/180/270/360ms), and every child from index 6 onward shares one final 450ms delay (`:nth-child(n+6)`), so a long Services/Portfolio/Process list never keeps visibly animating in one-at-a-time for more than roughly half a second. Both the step value and the cap are fixed in `globals.css`, never exposed to the admin form — confirmed both by direct CSS inspection and by an automated test.
+
+### Hero "Cinematic Reveal" — motion only, no media
+
+Coordinates the Hero's **existing** typographic elements (`.hero-sticker` badges, `.hero-meta`, `h1`, `.hero-tagline`, `.hero-foot`) with fixed sequential delays (0/80/180/300/400ms) and the same restrained fade+lift treatment every other preset uses — no per-letter animation, no rotation, no bounce, per your explicit instruction. This is a small, separate option set from the generic 8-preset vocabulary (`HeroEntrance`, not `MotionPreset`) specifically because it coordinates several named elements as one sequence rather than animating a single element.
+
+### Reduced motion — mandatory, unconditional, CSS-only
+
+A single `@media (prefers-reduced-motion: reduce)` block forces `opacity:1`, `transform:none`, `clip-path:none`, `transition:none`, `transition-delay:0ms`, and `animation:none` with `!important` on every motion-bearing selector — content is fully visible in its final state regardless of whether JavaScript ever runs. `useMotionEntrance()` also checks `prefers-reduced-motion` at the JS layer (skipping the observer entirely for these visitors), but that's a pure optimization — the CSS override is the actual, unconditional guarantee, confirmed by an automated test reading the compiled CSS directly rather than trusting the JS branch alone.
+
+### Admin/public isolation
+
+`admin.css` contains no `data-motion`-anything rule, and no file under `src/app/admin` imports `MotionSection` or `HeroMotionShell` — confirmed by an automated directory walk, not just by intent. The one preview route is the sole exception, and it renders the real *public* components (which already carry their own motion behavior), not an admin-styled reconstruction.
+
+### Automated regression testing
+
+Since `motion_settings` is a singleton draft/published **pair** — unlike Portfolio/Services, there's no way to spin up an isolated temporary entity — the test script temporarily changed the **real** rows' values, exercised the full save/validate/publish/audit/CSS-mapping/isolation surface (25 checks, covering exactly the items later re-verified in the real acceptance pass below), then **restored both rows to the approved seed exactly** and deleted the two test-generated audit rows, all confirmed by the script's own output before the temp script was deleted. **25/25 passed.**
+
+### Real acceptance test — what was genuinely verified
+
+Using your own real session through `/admin/website/motion` (not seeded, not synthetic): you set **Motion intensity to Bold**, **Hero entrance to Cinematic Reveal**, and chose real per-section presets (**Services: Slide Right + stagger, Portfolio: Scale In + stagger, Statement: Reveal, Studio: Fade Up, Process: Fade Up + stagger**), saved the draft, confirmed the public homepage stayed on the old settings, opened the private preview and reviewed the animations, then published. Two independent rounds of read-only verification (immediately after your test, and again before this commit) both confirmed, directly against Neon:
+
+- Exactly 2 `motion_settings` rows, one draft/one published, byte-identical to each other after publish.
+- Every field a real, valid enum value — `intensity: "bold"`, `heroEntrance: "cinematic_reveal"`, `servicesPreset: "slide_right"` (stagger `true`), `statementPreset: "reveal"`, `portfolioPreset: "scale_in"` (stagger `true`), `studioPreset: "fade_up"`, `processPreset: "fade_up"` (stagger `true`) — no arbitrary/CSS-shaped string anywhere in storage.
+- `getPublishedMotionSettings()` and `getDraftMotionSettings()` (the real, unmodified query functions) each return exactly what their respective row holds.
+- A correctly owner-attributed audit trail: `website.motion.draft_saved` then `website.motion.published`, metadata limited to exactly `{intensity, heroEntrance, servicesPreset, portfolioPreset}` — no CSS values, no credentials, confirmed by pattern-scanning the actual stored metadata.
+- Reduced-motion CSS, the 6-child stagger cap, and admin/public isolation all re-confirmed intact by direct source/CSS inspection.
+- Homepage content itself unchanged (`heroImageSrc` still `null` — untouched, exactly as this phase promised), and every other real record (`media_assets`=2, SP Juices' video, Graphic Design's video, BRCP-1013, 1 lead/1 customer/4 notes, Brand `#E70810`, the real Branding and Product Packaging edits, Custom Graphic Design published, 7 Services, 4 Portfolio projects) confirmed completely unaffected.
+
+**`intensity: "bold"`, `heroEntrance: "cinematic_reveal"`, and the real per-section presets above are your genuine, live, currently-published motion settings — real acceptance-test history, not placeholders to revert.**
+
+### What's still not built
+
+Homepage hero media (image/video) — explicitly Phase 19D-2's scope, not touched here. Parallax (deliberately dropped from the v1 admin-exposed preset list during architecture review — see that report's reasoning on jank/performance risk). Any raw duration/easing/distance admin control — never planned; the closed-preset-plus-intensity model is the permanent design, not a v1 simplification awaiting a v2 "advanced mode." Contact and Footer motion (deliberately excluded, per approval). Manifesto motion (left out of v1 to keep the first system focused, per your own explicit instruction).
+
+## Cinematic Homepage Hero Media (Phase 19D-2)
+
+**Status: complete — the homepage Hero can now show an optional inline image or video alongside its existing typography, backed by the same permanent-`mediaAssetId`-plus-read-time-resolution pattern already proven on Product, Brand, Service hero, Portfolio hero, and both video galleries. Live-tested against your own real video selection/save/preview/publish.** Deliberately **inline cinematic media only** — no background/full-screen video, no autoplay, no forced mute/loop, no AI generation, no Big Red Brain involvement. Motion-only Phase 19D-1 stays untouched; this phase only adds media into the slot Cinematic Reveal already animates.
+
+### Schema — one additive column, no new migration surprises
+
+`homepage_content.heroMediaAssetId` (migration `0013_bouncy_forgotten_one.sql`, already applied and verified before implementation began) — nullable `text`, FK → `media_assets.id`, `ON DELETE SET NULL`. Deliberately **no** separate "hero media type" column (an asset's own `media_assets.type` is already authoritative, resolved at read time) and **no** separate hero-specific poster column (a video's poster relationship already lives on the video asset itself via `posterMediaAssetId`, Phase 19A, resolved the same way Portfolio/Service hero media already is). `heroImageSrc`/`heroImageAlt` (reserved since Phase 14) remain the legacy/manual **image** fallback, used only when `heroMediaAssetId` is null — untouched, not repurposed.
+
+### Mode normalization — derived from field presence, not a client-sent "mode"
+
+`normalizeHeroMediaFields()` in `src/server/mutate-website-content.ts` is the one place that decides what's allowed to reach the database: a Media Library selection (`heroMediaAssetId` present) always wins and forces `heroImageSrc` null; otherwise a non-empty `heroImageSrc` means the legacy manual path; otherwise None. Critically, **the server never receives a "mode" field from the client at all** — mode is entirely re-derived from which raw values are present, which is what makes client-side mode spoofing structurally impossible rather than merely discouraged. `HeroMediaField.tsx` clears the other mode's stale state client-side on every mode change (first line of defense), but `normalizeHeroMediaFields()` — called before validation, with its output spread *after* the raw form values in the final `.set()` call — is the actual, authoritative enforcement point.
+
+### Server-side asset validation — both image AND video, unlike Portfolio/Service
+
+`validateHeroMediaAsset()` independently re-verifies, on every draft save, that a submitted `heroMediaAssetId` exists, is `status: "active"`, and is a supported type — never trusting the admin picker's own filtering. This deliberately checks **both** image and video references (Portfolio/Service galleries only async-validate video items, since their hero image field stays picker-filtered-image-only) — Hero's single slot can legitimately be either type, so both need the same real-asset guarantee. A previously-published reference to an asset that later becomes archived keeps resolving fine at read time; only a *new* draft save is rejected.
+
+### Read-time resolution — `resolveHeroMedia()`
+
+Direct structural port of `resolveProjectsMedia()`/`resolveServicesMedia()`'s two-pass shape, sized to Hero's single slot: resolve `heroMediaAssetId` to its live asset (any status — an already-published reference to a since-archived asset must keep resolving); if that asset is a video with its own `posterMediaAssetId`, batch-resolve that too. The resolved `HeroContent` object exposes `heroMediaMode` (`"none" | "image" | "video"`, read-time-only, never persisted), `heroVideoSrc`/`heroPosterSrc` (video-only, never persisted), and `heroImageSrc` (overwritten with the Library asset's live Blob URL only in image mode — otherwise the legacy manual path or null, exactly the same convention already proven for `ServiceImage.src`). `getDraftHeroContent()` is a new function — the equivalent of `getPublishedHeroContent()` keyed to the draft row, used exclusively by the admin preview.
+
+### Admin Hero Media field
+
+`HeroMediaField.tsx` — a controlled `None`/`Image`/`Video` select. Image mode offers an image-only Media Library picker plus the original manual-path input (mutually exclusive — selecting a Library image clears the manual path, and vice versa). Video mode offers a video-only picker whose tiles show the video's own poster thumbnail with a "Video" badge overlay, or a "Video (no poster set)" text fallback when no poster exists — the same anti-mis-click fix already proven on Portfolio and Service gallery pickers, applied here proactively. No raw Blob URL is ever shown to the admin. Serializes to three flat hidden inputs (`heroMediaAssetId`/`heroImageSrc`/`heroImageAlt`), matching every other flat field on this form rather than the JSON-array pattern repeatable editors use.
+
+### Public Hero rendering — bounded, reserved, never full-bleed
+
+`Hero.tsx` renders a `.hero-media` box as a 5th child of `.hero`'s existing flex layout, only when `heroMediaMode !== "none"` — a fixed `max-width:640px;aspect-ratio:16/9` reserved box (mirroring `.project-hero-media`'s bordered/shadowed treatment, the closest existing "hero media" precedent, rather than inventing a new visual language) so its presence/absence never shifts the typography above, which stays the visual priority. Image mode uses `next/image` (`fill`, `sizes`, authored alt, `object-fit:cover`). Video mode reuses the existing `VideoMedia` component completely unmodified — `controls`, `playsInline`, `preload="metadata"`, poster when available, **no autoplay, no forced mute, no forced loop** — `object-fit:contain` with a black letterboxed background, matching every other video-in-a-box treatment in this codebase. No second video-player implementation was created.
+
+### Motion integration — media joins Cinematic Reveal, never drives it
+
+`.hero-media` was added to the existing `cinematic_reveal` sequence at `transition-delay:500ms` (100ms after `.hero-foot`'s existing 400ms) and to the mandatory `prefers-reduced-motion` override list. No `video.play()` call exists anywhere, no `IntersectionObserver` is connected to playback, no second animation library was introduced, no scroll listener was added — motion only ever touches `opacity`/`transform` on the wrapping box; the video element itself is untouched by the motion system, and playback stays entirely user-initiated regardless of the motion state.
+
+### Draft/preview/publish — plus a real, pre-existing bug fixed along the way
+
+Save Draft writes only the draft row; Publish copies `heroMediaAssetId` (alongside every other hero column) onto the published row inside the existing transaction — no separate immediate/public hero-media mutation path exists outside this workflow. **A genuine pre-existing inconsistency was found and fixed as part of this phase**: `/admin/website/homepage/preview` previously always rendered with **published** motion settings, unlike `/admin/website/motion/preview`, which already correctly used draft motion. Since this exact file needed to change anyway to add hero-media preview support, the preview page now calls the new `getDraftHeroContent()` and passes `motionVariant="draft"` to `Hero`, so the private preview genuinely represents what Publish will make live — draft content, draft hero media, and draft motion together. The public homepage is unaffected: `Hero`'s `motionVariant` prop still defaults to `"published"` everywhere else.
+
+### Usage scanning
+
+`findHeroMediaUsage()` (`src/server/queries/media.ts`) — a plain column-equality scan (not JSONB containment, since `heroMediaAssetId` is a scalar column) — reports "Homepage Hero" on `/admin/media/[id]`'s "Used by" panel, distinguishing a draft-only reference from a published one exactly like the existing Service/Portfolio draft-vs-published distinction. Every pre-existing usage scan (product/service/portfolio/poster) is unmodified and unaffected.
+
+### Automated regression testing
+
+Since `homepage_content` is a singleton draft/published **pair** — the same constraint `motion_settings` and `brand_settings` share — the test script temporarily mutated the **real** rows (after snapshotting them to disk) and temporary `media_assets` rows (clearly `test-phase19d2-`-tagged), exercised the full normalization/validation/save/resolve/publish/mode-transition/archived-asset/usage-scanning surface (**40/40 checks passed**), then a separate HTTP-based check against a temporary local dev server confirmed real rendered markup for all three modes — video (`controls`, `playsInline`, `preload="metadata"`, correct poster, correct src, **no** autoplay/muted/loop attributes present), image (`next/image` markup with correct alt and srcSet), and none (zero `.hero-media` divs, Cinematic Reveal attributes unaffected) — before the temporary server was killed, the real draft/published rows were restored to their **exact** pre-test snapshot, and every temp media asset was deleted.
+
+### Real acceptance test — what was genuinely verified
+
+Using your own real Homepage Hero workflow (not seeded, not synthetic): you selected your legitimate Media Library video, saved the draft, verified it in the private preview (video, poster, user-initiated playback, native controls, Cinematic Reveal, responsive layout all confirmed working), confirmed the public homepage stayed unchanged before publishing, then published and confirmed the video is now live on the public homepage. Two rounds of independent read-only verification (47 checks total) both confirmed, directly against Neon:
+
+- Exactly 2 `homepage_content` rows, one draft/one published, with identical `heroMediaAssetId` after your publish.
+- The referenced asset exists exactly once, `type: "video"`, `status: "active"`, permanent id stable across draft and published.
+- `heroImageSrc` is `null` on both rows — no Blob URL, no posterSrc, and no copied media type were ever persisted into `homepage_content` (the table structurally has no columns for any of those — resolution is 100% read-time).
+- `getPublishedHeroContent()`/`getDraftHeroContent()` both correctly resolve the current video Blob URL and, via the video's own `posterMediaAssetId`, the current poster URL — the poster asset independently confirmed to be a real, active image.
+- **Your real Homepage Hero now references the exact same permanent Media Library video asset already used by SP Juices' portfolio gallery (Phase 19B) and the Graphic Design service's gallery (Phase 19C)** — confirmed by comparing `media_assets.id` across all three references, not just by filename. This is the Media Library's core "one asset, resolved everywhere it's referenced" guarantee, now proven across three genuinely independent consumers.
+- Homepage Hero usage scanning correctly reports both a draft and a published reference; poster usage scanning correctly reports "poster for video" for the same asset — both regression-free against the pre-existing product/service/portfolio scans.
+- `media_assets` remains exactly 2 rows, no duplicates by id.
+- Motion settings unaffected: published `heroEntrance: "cinematic_reveal"`, `intensity: "bold"`, matching Phase 19D-1's real published values exactly; draft motion (what the preview reads) matches too.
+- A correctly owner-attributed audit trail (`website.hero.draft_saved` then `website.hero.published` as the two most recent `homepage_content` events), metadata limited to `{headlineLead}` — no Blob URLs, tokens, credentials, or PII found anywhere in the scanned metadata.
+- Every other real record confirmed completely unaffected: BRCP-1013, 1 lead/1 customer/4 notes, Brand `#E70810`, the real Branding service and Product Packaging edits, Custom Graphic Design published, 7 Services, 4 Portfolio projects.
+- Migration `0013_bouncy_forgotten_one.sql` remains the only Phase 19D-2 schema migration; migrations 0000–0012 confirmed byte-unchanged (`git status` shows no modifications to any existing migration file, only the new 0013 file and its accompanying journal/snapshot metadata).
+
+**One honest, non-blocking gap found during this verification**: both the draft and published rows currently have `heroImageAlt: null`, and the referenced video asset's own `alt` field is an empty string — meaning the live video's `aria-label` is currently empty on the public homepage. The "Accessibility label" field in the admin Hero Media form is optional (not `required`), so nothing prevented publishing without it. This is not a code defect — every other accessibility guarantee this phase promised (native controls, keyboard-operable playback, no autoplay) is intact — but it's a real, current gap worth closing: filling in that one field from `/admin/website/homepage` (Save Draft → Preview → Publish) is all that's needed.
+
+### What's still not built (documented, not silently deferred)
+
+**No background/autoplay cinematic Hero treatment** — this phase deliberately built the safe inline path only (`controls`, no autoplay, no forced mute/loop); a full-bleed background-video hero remains a later, separate enhancement, attempted only once the inline path has real usage behind it, per the original Phase 19D-2 scope decision. **No captions/transcript system** — video accessibility today is limited to the native `<video>` element's own controls and an admin-authored `aria-label`; no caption track (`<track kind="captions">`) or transcript exists anywhere in this codebase, for the Hero or any other video consumer, and this is not claimed as solved. **No advanced Hero presentation controls** — no per-video autoplay/muted/loop/object-fit override, no aspect-ratio choice, no multiple-hero-media-item support; the Hero has exactly one optional media slot, matching the approved v1 scope. **No AI generation of any kind** — hero media selection is 100% manual, admin-driven, from assets already uploaded through the existing Media Library upload flow; Big Red Brain and AI Creative Studio remain entirely unbuilt (Phase 20).
+
+## Roadmap
+
+**This section is the single, authoritative statement of the phase timeline from here forward.** It is documentation only — nothing described below as a future phase has been implemented, scheduled with a date, or approved for implementation merely by appearing here. Every phase-specific section elsewhere in this file (Video Media Foundation, Portfolio/Service Video Support, etc.) remains the authoritative record of what has **already shipped** and its own real acceptance-test history — this section does not rewrite or supersede any of that. When a future phase below actually starts, it gets its own dedicated section (following this file's established pattern) with real architecture decisions, real test results, and real acceptance history — the entries below are deliberately kept at planning-level detail, not implementation detail, until that happens.
+
+The roadmap stays **open**: a new idea raised in conversation gets evaluated and slotted into the appropriate phase below (or added as a new future phase) — it is never treated as automatically approved for immediate implementation just because it was mentioned.
+
+### Phase 19D-1 — Motion System + Admin Controls — **complete**
+
+Done — see "Motion System (Phase 19D-1)" above for the full architecture and real acceptance-test history. Database-backed motion settings (`motion_settings`, draft/published two-row pattern), a Save Draft → Preview → Publish workflow at `/admin/website/motion`, a reusable `MotionSection`/`useMotionEntrance` architecture, a small closed set of animation presets (`none`/`fade`/`fade_up`/`fade_down`/`slide_left`/`slide_right`/`scale_in`/`reveal`), a global motion-intensity setting (`subtle`/`standard`/`bold`), per-section stagger controls (Services/Portfolio/Process, capped at 6 children), a coordinated "Cinematic Reveal" entrance for the Hero's existing typography (no hero media involved), mandatory `prefers-reduced-motion` support, and a lightweight shared-`IntersectionObserver` implementation (no animation library). Wired into Hero, Services, Statement, Portfolio, Studio, and Process; Header, Ticker, Manifesto, Contact, and Footer deliberately excluded. **No homepage video/image media activation happened in this phase** — that was, and remains, explicitly Phase 19D-2's scope.
+
+### Phase 19D-2 — Cinematic Homepage Hero Media — **complete**
+
+Done — see "Cinematic Homepage Hero Media (Phase 19D-2)" above for the full architecture and real acceptance-test history. The homepage hero's Media Library integration: `None`/`Image`/`Video` modes, a permanent `heroMediaAssetId` reference (mirroring the exact pattern already proven on Product, Brand, Service hero, and Portfolio hero), video poster resolution from the video asset's own `posterMediaAssetId` (no separate hero-specific poster column), responsive inline presentation, poster-first loading, `controls`, `playsInline`, `preload="metadata"`, mobile-safe fallback behavior, and no forced autoplay/mute/loop. Your real, live, currently-published Homepage Hero now references the exact same Media Library video already used by SP Juices (Portfolio, Phase 19B) and Graphic Design (Services, Phase 19C). A background/autoplay cinematic hero treatment remains a later, deliberately separate enhancement, attempted only once the safe inline video path has more real usage behind it — not part of this phase.
+
+### Phase 20 — Big Red Brain + AI Creative Studio
+
+Builds the AI layer around the existing platform. **Big Red Brain** should eventually understand: brand settings, homepage content, motion settings, Services, Portfolio, Products, the Media Library, Leads, Customers, Orders, and this project's own history/approved structure. Initial planned capabilities: analyze brand/design work; recommend website improvements; recommend motion settings; generate marketing copy, captions, project descriptions, SEO drafts, and campaign concepts; suggest Portfolio presentation and Service content; assist with customer/project workflows.
+
+**AI safety model, fixed from the start:** AI may `READ → ANALYZE → RECOMMEND → CREATE DRAFT`. AI must **never**, autonomously: publish website changes, delete customer/business data, change payment records, issue refunds, send customer communications, modify security settings, expose credentials, or perform any destructive operation. Important changes always require explicit owner approval — this is the same draft/publish staging discipline already proven throughout this codebase (Brand Controls, Website Content, Services/Portfolio Admin, and now Motion), extended to cover AI-originated drafts specifically, not a new mechanism invented for AI.
+
+**AI Creative Studio** flow: `Design → Big Red Brain → AI Creative Studio → Media Library → Portfolio / Services / Marketing`. Future capabilities under this umbrella: branding presentation videos, logo reveal concepts, animated mockups, product/package showcase videos, cinematic portfolio reels, social-media promo videos, testimonial reels, motion graphics, image generation, video generation, copy/caption generation. Generated media must enter the **existing** Media Library — never a second, disconnected asset system — so every consumer (Portfolio, Services, and eventually the homepage) resolves it through the exact same `mediaAssetId`-plus-live-resolution mechanism already proven for human-uploaded assets. External AI/video providers should be abstracted behind a provider layer where practical, so this platform is not permanently locked to one vendor. AI usage requires: authentication, authorization, rate limits, usage/cost controls, server-side-only API credentials, auditability, and explicit owner-approval boundaries before anything it touches becomes public.
+
+### Phase 21 — Security Hardening + Penetration Testing
+
+**A required production/launch security gate — not optional, not satisfied merely because admin authentication already works.** Must cover the entire application, targeting professional small-business application security using OWASP ASVS Level 2-style controls where applicable. Subsections:
+
+- **21A — Admin + Authentication**: Google auth, owner/admin authorization, MFA expectations for privileged accounts, session security/expiration, logout behavior, protected admin routes, Server Actions, API Route Handlers, direct-request authorization-bypass attempts, CSRF, privilege escalation, IDOR/broken access control, unauthorized mutations. Every sensitive mutation must independently authorize the admin (the standing rule since Phase 12 — this phase is where it gets attack-tested, not just followed).
+- **21B — Store + Checkout + Orders** (high priority): price/quantity/subtotal/deposit/total manipulation, negative quantities, fake or manipulated product IDs, checkout request replay, malformed requests, duplicate submissions, direct API/Server Action calls bypassing the UI, order-number manipulation, unauthorized order access/modification, manual-order security, order-status and payment-status manipulation. The browser must never be authoritative for money — the server already is (see "Backend + database foundation" → "Security"); this phase is where that guarantee gets adversarially tested, not assumed. Integer-cents money representation continues unchanged.
+- **21C — Payment Security Gate**: a genuinely **separate**, additional checkpoint required before accepting the first real production payment, whenever real online payments are eventually introduced (no Stripe or any processor exists in this codebase today — see "Checkout + Order foundation"). Never store raw card numbers, CVV/CVC, or full payment credentials; use a reputable processor (e.g. Stripe); cryptographically verify webhooks; a browser request must never be able to declare an order paid. Tests: forged/replayed webhooks, duplicate events, altered amounts, mismatched order/payment amounts, refund authorization, payment-status spoofing, failed-payment behavior.
+- **21D — Customer Data + Privacy**: names, emails, phone numbers, companies, leads, customers, orders, notes, and any future addresses/uploads. Tests: unauthorized reads, IDOR, data leakage, audit-log leakage, accidental PII exposure, excessive logging, API response exposure. Continues the standing "no PII in audit metadata" rule already followed since Phase 18A.
+- **21E — Input + Application Security**: XSS (stored and reflected), SQL injection, malformed JSON, unexpected enum values, malicious URLs, oversized payloads, Unicode/control-character edge cases, HTML/script injection, path manipulation — across both public and admin inputs, server-validated even where the UI already constrains input (the existing closed-enum discipline proven in Motion/Portfolio/Services is exactly the kind of defense this phase verifies, not invents).
+- **21F — Media + File Upload Security**: full Media Library review — unauthorized uploads/replacement, MIME/extension spoofing, malformed image/video files, oversized uploads, storage abuse, malicious filenames, archived-asset behavior, Blob authorization, upload-token exposure, upload rate limiting. `BLOB_READ_WRITE_TOKEN` and all other credentials stay server-side, never exposed to the browser (already true — see "Video Media Foundation (Phase 19A)"; this phase verifies it under attack). If sensitive customer documents, invoices, contracts, or private project files are ever stored, they must NOT default into the current public media store — a private-file architecture would need designing first.
+- **21G — Big Red Brain / AI Security**: treats AI as an untrusted assistant, never an administrator. Tests: prompt injection (direct and indirect via malicious customer content), attempts to expose system prompts/secrets, unauthorized tool/action requests, destructive suggestions, AI-generated XSS/HTML, API-credit abuse, generation spam, oversized requests. Requires: AI-specific rate limiting, usage quotas/cost controls, server-side-only provider credentials, permission boundaries, approval gates, safe output validation, auditability. Big Red Brain must never obtain unrestricted database/admin authority — the architecture stays `READ → ANALYZE → RECOMMEND → DRAFT → OWNER APPROVES → MUTATION/PUBLISH`, identical to Phase 20's own safety model above.
+- **21H — Rate Limiting + Abuse Protection**: contact form, authentication-sensitive endpoints, checkout, order creation, uploads, AI generation, other expensive APIs, public mutation endpoints. The existing contact-form same-email cooldown (Phase 18A) is useful but explicitly does **not** substitute for general abuse/rate-limit protection — `POST /api/orders` has been a documented, known gap since Phase 11, and this is the phase that closes it.
+- **21I — Browser + HTTP Security**: production headers (`Content-Security-Policy`, `Strict-Transport-Security`, `X-Content-Type-Options`, `Referrer-Policy`, `Permissions-Policy`, clickjacking/frame protections), secure cookies, `SameSite` behavior, HTTPS-only behavior, production redirects, external-resource policy.
+- **21J — Infrastructure + Secrets**: Vercel/Neon/Blob configuration, Development/Preview/Production separation, environment variables, Google OAuth configuration, future AI-provider credentials, npm dependencies, and a scan of both the current repository and **Git history** for accidentally committed secrets. No credential should exist in source code, ever.
+- **21K — Dependency + Production Testing**: npm dependency/security audit, a real production build, security-header tests, authorization/CSRF/XSS/SQL-injection/IDOR/upload-abuse/checkout-manipulation/rate-limit tests, an OWASP ZAP baseline scan against an appropriate Preview deployment, and manual attack testing. Destructive penetration testing is never performed against real production business data — Preview/test data only where anything destructive is required.
+
+**Phase 21 completion requirement** — cannot be marked complete until: (1) admin/authentication passes, (2) store/checkout/order security passes, (3) customer-data authorization passes, (4) media/upload security passes, (5) Big Red Brain/AI boundaries pass if AI is enabled by then, (6) production headers/configuration pass, (7) critical/high findings are fixed and retested, (8) security acceptance results are documented (following this file's own established "what was genuinely verified" honesty standard). If real payments have been implemented by this point, (9) the Payment Security Gate (21C) must also separately pass before accepting production payments.
+
+### Phase 22 — Production Polish + Launch Readiness
+
+After security hardening. Potential scope: final responsive QA, accessibility review, performance optimization, Core Web Vitals, SEO validation, metadata/Open Graph, sitemap/robots, 404/error states, final copy/content QA, backup/recovery procedures, operational monitoring, analytics, production-domain checks, and a launch checklist. Security findings from Phase 21 always take priority over cosmetic launch work — this phase does not start fixing paint while Phase 21 still has open critical/high findings.
 
 ## Rules for creating new components
 

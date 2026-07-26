@@ -5,16 +5,33 @@ import Image from "next/image";
 import type { ProjectImage } from "@/data/projects";
 import type { PickerMediaAsset } from "./ProductMediaEditor";
 
+// Phase 19B — the gallery picker (unlike the hero picker, which stays
+// image-only) now receives BOTH image and video assets, so each picker
+// item needs to carry its own type. A local intersection type rather
+// than widening the shared PickerMediaAsset — only this file's picker
+// needs to distinguish image from video.
+//
+// `posterUrl` (added after a real acceptance-test bug report) is a
+// server-resolved convenience field, NOT part of PickerMediaAsset itself
+// — a video tile with no visible thumbnail sat in the same grid as its
+// own poster image (a separate, fully-thumbnailed tile), and a real user
+// clicked the poster's picture-looking tile believing it WAS the video.
+// Showing the video's own poster here (mirroring the exact
+// poster-thumbnail-plus-badge pattern /admin/media's own grid already
+// uses) makes the two tiles visually distinguishable instead of relying
+// on the bare "Video" text label alone.
+export type PortfolioGalleryPickerAsset = PickerMediaAsset & { type: "image" | "video"; posterUrl?: string };
+
 function emptyImage(): ProjectImage {
   return { src: "", alt: "" };
 }
 
 // Repeatable gallery editor — direct mirror of ServiceGalleryEditor.tsx,
-// with one addition: a lightBackground checkbox per item, since
-// ProjectImage (unlike ServiceImage) supports it and ProjectGallery.tsx
-// actually renders it (dark background is the default; toggle only for
-// images that read poorly on black, e.g. a dark-outlined logo on
-// transparent). No caption field — ProjectImage has none.
+// with two additions: a lightBackground checkbox per item (image-only —
+// ProjectImage's lightBackground concept has no video equivalent, and
+// ProjectGallery.tsx never reads it for a video item), and, as of Phase
+// 19B, the ability to select a video from the Media Library. No caption
+// field — ProjectImage has none, and this phase doesn't invent one.
 export default function PortfolioGalleryEditor({
   name,
   initialImages,
@@ -22,7 +39,7 @@ export default function PortfolioGalleryEditor({
 }: {
   name: string;
   initialImages: ProjectImage[];
-  mediaAssets: PickerMediaAsset[];
+  mediaAssets: PortfolioGalleryPickerAsset[];
 }) {
   const [images, setImages] = useState<ProjectImage[]>(initialImages);
   const [pickerOpenFor, setPickerOpenFor] = useState<number | "new" | null>(null);
@@ -49,11 +66,21 @@ export default function PortfolioGalleryEditor({
     });
   }
 
-  function selectFromLibrary(asset: PickerMediaAsset) {
+  // Selecting a video sets type: "video" explicitly. Selecting an image
+  // deliberately does NOT set type: "image" — preserves the exact
+  // existing shape a Media-Library-selected image already had before
+  // Phase 19B (no `type` field at all), matching "preserve existing
+  // image behavior" literally rather than introducing a cosmetic diff.
+  function selectFromLibrary(asset: PortfolioGalleryPickerAsset) {
+    const patch: Partial<ProjectImage> =
+      asset.type === "video"
+        ? { src: asset.url, mediaAssetId: asset.id, type: "video" as const }
+        : { src: asset.url, mediaAssetId: asset.id, type: undefined };
+
     if (pickerOpenFor === "new") {
-      setImages((prev) => [...prev, { src: asset.url, alt: asset.alt, mediaAssetId: asset.id }]);
+      setImages((prev) => [...prev, { ...emptyImage(), alt: asset.alt, ...patch }]);
     } else if (typeof pickerOpenFor === "number") {
-      updateImage(pickerOpenFor, { src: asset.url, mediaAssetId: asset.id, alt: images[pickerOpenFor]?.alt || asset.alt });
+      updateImage(pickerOpenFor, { ...patch, alt: images[pickerOpenFor]?.alt || asset.alt });
     }
     setPickerOpenFor(null);
   }
@@ -75,7 +102,18 @@ export default function PortfolioGalleryEditor({
                 title={asset.filename}
               >
                 <span className="admin-media-picker-thumb">
-                  <Image src={asset.url} alt={asset.alt} fill sizes="120px" />
+                  {asset.type === "video" ? (
+                    asset.posterUrl ? (
+                      <>
+                        <Image src={asset.posterUrl} alt={asset.alt} fill sizes="120px" />
+                        <span className="admin-media-card-video-badge">Video</span>
+                      </>
+                    ) : (
+                      <span className="admin-media-card-video-label">Video (no poster set)</span>
+                    )
+                  ) : (
+                    <Image src={asset.url} alt={asset.alt} fill sizes="120px" />
+                  )}
                 </span>
               </button>
             ))}
@@ -92,12 +130,17 @@ export default function PortfolioGalleryEditor({
     <div className="admin-form-row">
       <input type="hidden" name={name} value={JSON.stringify(images.filter((image) => image.src.trim() !== ""))} />
       <p className="admin-form-label-standalone">Gallery</p>
-      <p className="admin-form-section-help">Optional supporting images shown below the hero image, in this order.</p>
+      <p className="admin-form-section-help">
+        Optional supporting images or videos shown below the hero image, in this order. Videos must be chosen from
+        the Media Library.
+      </p>
 
       {images.map((image, index) => (
         <div className="admin-repeatable-item" key={index}>
           <div className="admin-repeatable-item-header">
-            <span>Image {index + 1}</span>
+            <span>
+              {image.type === "video" ? "Video" : "Image"} {index + 1}
+            </span>
             <div style={{ display: "flex", gap: 8 }}>
               <button type="button" className="admin-secondary-button" onClick={() => moveImage(index, -1)} disabled={index === 0} aria-label="Move up">
                 ↑
@@ -110,36 +153,43 @@ export default function PortfolioGalleryEditor({
               </button>
             </div>
           </div>
-          {image.src && image.mediaAssetId && (
+          {image.src && image.mediaAssetId && image.type !== "video" && (
             <div className="admin-media-editor-preview">
               <Image src={image.src} alt={image.alt} fill sizes="80px" />
               <span className="admin-form-help">From your Media Library.</span>
             </div>
+          )}
+          {image.type === "video" && (
+            <p className="admin-form-help">Video from your Media Library — poster (if any) and playback controls appear on the public page.</p>
           )}
           <div className="admin-form-row admin-form-row-split">
             <label>
               Alt text
               <input type="text" value={image.alt} onChange={(e) => updateImage(index, { alt: e.target.value })} />
             </label>
-            <label>
-              Path
-              <span className="admin-form-optional"> (filled in automatically when chosen from the library)</span>
-              <input
-                type="text"
-                value={image.src}
-                placeholder="/images/projects/[slug]/gallery-1.jpg"
-                onChange={(e) => updateImage(index, { src: e.target.value, mediaAssetId: undefined })}
-              />
-            </label>
+            {image.type !== "video" && (
+              <label>
+                Path
+                <span className="admin-form-optional"> (filled in automatically when chosen from the library)</span>
+                <input
+                  type="text"
+                  value={image.src}
+                  placeholder="/images/projects/[slug]/gallery-1.jpg"
+                  onChange={(e) => updateImage(index, { src: e.target.value, mediaAssetId: undefined, type: undefined })}
+                />
+              </label>
+            )}
           </div>
-          <label className="admin-form-checkbox-row">
-            <input
-              type="checkbox"
-              checked={image.lightBackground ?? false}
-              onChange={(e) => updateImage(index, { lightBackground: e.target.checked })}
-            />
-            Light background — for images that read poorly on the default black gallery background
-          </label>
+          {image.type !== "video" && (
+            <label className="admin-form-checkbox-row">
+              <input
+                type="checkbox"
+                checked={image.lightBackground ?? false}
+                onChange={(e) => updateImage(index, { lightBackground: e.target.checked })}
+              />
+              Light background — for images that read poorly on the default black gallery background
+            </label>
+          )}
           <button
             type="button"
             className="admin-secondary-button"

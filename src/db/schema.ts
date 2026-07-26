@@ -10,6 +10,7 @@ import {
   uniqueIndex,
   uuid,
 } from "drizzle-orm/pg-core";
+import type { AnyPgColumn } from "drizzle-orm/pg-core";
 import { relations, sql } from "drizzle-orm";
 import type { Media } from "@/data/media";
 import type { ProductAddOn, ProductOption, ProductPackage, ProductPricing } from "@/data/products";
@@ -17,6 +18,7 @@ import type { CartAddOnSelection, CartOptionSelection, CartPackageSelection } fr
 import type { OrderPricingSummary } from "@/data/orders";
 import type { ServiceImage, ServiceProcessStep } from "@/data/services";
 import type { ProjectImage, ProjectExternalLink, ProjectResult, ProjectCredit } from "@/data/projects";
+import type { MotionSettingsStatus, MotionIntensity, MotionPreset, HeroEntrance } from "@/data/motion";
 
 // Server-side persistence layer — see CLAUDE.md "Backend + database
 // foundation" for the full architecture writeup. This schema deliberately
@@ -410,6 +412,23 @@ export const homepageContent = pgTable("homepage_content", {
   ctaHref: text("cta_href").notNull(),
   heroImageSrc: text("hero_image_src"),
   heroImageAlt: text("hero_image_alt"),
+  // Phase 19D-2 — nullable, optional link to a media_assets row, the same
+  // optional-mediaAssetId-plus-legacy-path-fallback pattern already
+  // proven on Product.media (Phase 15), brand_settings (Phase 16), and
+  // Service/Portfolio hero images (Phase 17). Deliberately does NOT add a
+  // separate "hero media type" column — media_assets.type is already
+  // authoritative for image-vs-video, resolved at read time, never
+  // duplicated here. Deliberately does NOT add a separate hero poster
+  // column either — a video's poster relationship already lives on the
+  // video asset itself (media_assets.posterMediaAssetId, Phase 19A) and
+  // is resolved the same way Portfolio/Service hero media already is.
+  // heroImageSrc/heroImageAlt above remain the legacy/manual IMAGE
+  // fallback, used only when this column is null — untouched, not
+  // repurposed. ON DELETE SET NULL: deleting/archiving the referenced
+  // asset must never cascade-delete or block deletion of this row — the
+  // hero simply loses its media reference, exactly like every other
+  // optional media reference in this schema.
+  heroMediaAssetId: text("hero_media_asset_id").references(() => mediaAssets.id, { onDelete: "set null" }),
   secondaryCtaLabel: text("secondary_cta_label"),
   secondaryCtaHref: text("secondary_cta_href"),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
@@ -477,6 +496,21 @@ export const mediaAssets = pgTable("media_assets", {
   alt: text("alt").notNull().default(""),
   caption: text("caption"),
   status: text("status").notNull().$type<MediaAssetStatus>(),
+  // Phase 19A — nullable, self-referencing FK to another media_assets row
+  // (always an image asset in practice, enforced at the application layer
+  // rather than a DB CHECK constraint, matching how every other "which
+  // kind of asset is allowed here" rule in this codebase already lives in
+  // validation code, not SQL). Lets a video's poster be a real, reusable,
+  // independently-replaceable Media Library image — the same optional-
+  // mediaAssetId-plus-manual-fallback pattern already proven three times
+  // (Product.media, brand_settings logos, service/portfolio hero images).
+  // ON DELETE SET NULL: deleting/archiving the poster image must never
+  // cascade-delete or block deletion of the video asset that references
+  // it — the video row simply loses its poster reference, exactly like
+  // every other optional media reference in this schema.
+  posterMediaAssetId: text("poster_media_asset_id").references((): AnyPgColumn => mediaAssets.id, {
+    onDelete: "set null",
+  }),
   createdByAdminUserId: uuid("created_by_admin_user_id").references(() => adminUsers.id, { onDelete: "set null" }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
@@ -484,6 +518,11 @@ export const mediaAssets = pgTable("media_assets", {
 
 export const mediaAssetsRelations = relations(mediaAssets, ({ one }) => ({
   createdByAdminUser: one(adminUsers, { fields: [mediaAssets.createdByAdminUserId], references: [adminUsers.id] }),
+  posterMediaAsset: one(mediaAssets, {
+    fields: [mediaAssets.posterMediaAssetId],
+    references: [mediaAssets.id],
+    relationName: "posterMediaAsset",
+  }),
 }));
 
 // ---------------------------------------------------------------------
@@ -825,3 +864,55 @@ export const notes = pgTable(
 export const notesRelations = relations(notes, ({ one }) => ({
   adminUser: one(adminUsers, { fields: [notes.adminUserId], references: [adminUsers.id] }),
 }));
+
+// ---------------------------------------------------------------------
+// Phase 19D-1 — Motion System + Admin Controls. Exactly two rows,
+// differentiated by `status`, the identical draft/published singleton-pair
+// pattern already proven by brand_settings (Phase 16) and homepage_content
+// (Phase 14) — never a version-history table, just "the one being edited"
+// and "the one that's live." No unique index enforces the two-row limit
+// (brand_settings/homepage_content don't either) — that discipline lives
+// entirely in the application layer (src/server/mutate-motion.ts, not yet
+// built), exactly like those two tables.
+//
+// Every preset column is a closed, validated enum string — never raw CSS,
+// never a transform/duration/easing value, never arbitrary text. This is
+// the actual security/safety boundary for a future Big Red Brain
+// suggestion (see CLAUDE.md "Phase 19D" once written): there is no column
+// here an AI (or a human) could write an arbitrary CSS expression into,
+// only a value from MOTION_PRESETS/MOTION_INTENSITIES/HERO_ENTRANCE_OPTIONS.
+//
+// The enum constants themselves live in src/data/motion.ts, not here —
+// only the TYPES are imported for these columns' $type<>() annotations.
+// This mirrors the exact ServiceImage/ProjectImage pattern already used
+// throughout this file: src/data/*.ts is the single, client-safe source
+// of truth for a business enum/shape, schema.ts only borrows its type.
+// Keeping the runtime arrays out of schema.ts also keeps them safely
+// importable from client components (the admin motion form, MotionSection)
+// without pulling any drizzle-orm code into a client bundle.
+//
+// Deliberately does NOT reference media_assets or homepage_content in any
+// way — Phase 19D-1 is motion-only. Hero media (heroMediaAssetId on
+// homepage_content) is explicit Phase 19D-2 scope; this table's
+// `heroEntrance` column only ever chooses between "none" and
+// "cinematic_reveal" as a presentation *behavior*, independent of whether
+// any hero media exists yet.
+// ---------------------------------------------------------------------
+export const motionSettings = pgTable("motion_settings", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  status: text("status").notNull().$type<MotionSettingsStatus>(),
+  // Global multiplier applied on top of every section's own preset choice
+  // — scales distance/duration/easing together via a fixed, code-owned
+  // mapping (never a raw number an admin or AI can set directly).
+  intensity: text("intensity").notNull().$type<MotionIntensity>(),
+  heroEntrance: text("hero_entrance").notNull().$type<HeroEntrance>(),
+  servicesPreset: text("services_preset").notNull().$type<MotionPreset>(),
+  servicesStagger: boolean("services_stagger").notNull().default(false),
+  statementPreset: text("statement_preset").notNull().$type<MotionPreset>(),
+  portfolioPreset: text("portfolio_preset").notNull().$type<MotionPreset>(),
+  portfolioStagger: boolean("portfolio_stagger").notNull().default(false),
+  studioPreset: text("studio_preset").notNull().$type<MotionPreset>(),
+  processPreset: text("process_preset").notNull().$type<MotionPreset>(),
+  processStagger: boolean("process_stagger").notNull().default(false),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});

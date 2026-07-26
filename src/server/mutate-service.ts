@@ -6,11 +6,13 @@ import { and, asc, eq, ne } from "drizzle-orm";
 import { getDb } from "@/db";
 import { services, serviceVersions } from "@/db/schema";
 import { collectServiceValidationErrors } from "@/data/services.validate";
+import { sanitizeServiceGalleryForStorage } from "@/data/services";
 import { requireAdminUser } from "@/server/require-admin-user";
 import { buildServiceVersionFromFormData } from "@/server/build-service-form";
 import type { ServiceVersionContent } from "@/server/build-service-form";
 import { recordAuditEvent } from "@/server/audit-log";
 import { getServiceEntityForAdmin } from "@/server/queries/services";
+import { getMediaAssetsByIds } from "@/server/queries/media";
 
 // The only place a services/service_versions row is created or written.
 // Every export here independently calls requireAdminUser() — Server
@@ -116,9 +118,43 @@ function contentToColumns(content: ServiceVersionContent) {
     heroMediaAssetId: content.heroImage?.mediaAssetId ?? null,
     heroImageSrc: content.heroImage?.src ?? null,
     heroImageAlt: content.heroImage?.alt ?? null,
-    gallery: content.gallery ?? null,
+    gallery: sanitizeServiceGalleryForStorage(content.gallery),
     seo: content.seo,
   };
+}
+
+// Phase 19C — the deeper, real-Neon-data check services.validate.ts's
+// synchronous structural check can't do (it has no database access, by
+// design). Never trusts that the admin picker's own "active videos only"
+// filtering was the only gate: a stale page, a race with someone
+// archiving the asset between page-load and submit, or a hand-crafted
+// request are all caught identically here. Deliberately only called from
+// create/save-draft (new content being written) — not from publish, which
+// promotes already-validated draft content rather than accepting new
+// input. Direct structural mirror of mutate-portfolio.ts's
+// validateVideoGalleryReferences() — kept separate, not shared, per the
+// same "Services and Portfolio evolve independently" decision that kept
+// the sanitizer functions separate.
+async function validateVideoGalleryReferences(content: ServiceVersionContent): Promise<string[]> {
+  const videoItems = (content.gallery ?? []).filter((image) => image.type === "video");
+  if (videoItems.length === 0) return [];
+
+  const ids = [...new Set(videoItems.map((item) => item.mediaAssetId).filter((id): id is string => !!id))];
+  const assets = await getMediaAssetsByIds(ids);
+
+  const errors: string[] = [];
+  for (const item of videoItems) {
+    if (!item.mediaAssetId) continue; // already caught by the sync structural check
+    const asset = assets.get(item.mediaAssetId);
+    if (!asset) {
+      errors.push(`Gallery video "${item.alt || item.mediaAssetId}" no longer exists in the Media Library.`);
+    } else if (asset.type !== "video") {
+      errors.push(`Gallery item "${item.alt || asset.filename}" is marked as video but its Media Library asset is not a video.`);
+    } else if (asset.status !== "active") {
+      errors.push(`Gallery video "${asset.filename}" is archived and can't be selected for a new draft save. Choose an active video instead.`);
+    }
+  }
+  return errors;
 }
 
 // ---------------------------------------------------------------------
@@ -139,6 +175,10 @@ export async function createServiceAction(
   const contentErrors = validateContent(parsed.content);
   if (contentErrors.length > 0) {
     return { errors: contentErrors };
+  }
+  const videoErrors = await validateVideoGalleryReferences(parsed.content);
+  if (videoErrors.length > 0) {
+    return { errors: videoErrors };
   }
 
   const db = getDb();
@@ -206,6 +246,10 @@ export async function saveServiceDraftAction(
   const contentErrors = validateContent(parsed.content);
   if (contentErrors.length > 0) {
     return { errors: contentErrors };
+  }
+  const videoErrors = await validateVideoGalleryReferences(parsed.content);
+  if (videoErrors.length > 0) {
+    return { errors: videoErrors };
   }
 
   const db = getDb();

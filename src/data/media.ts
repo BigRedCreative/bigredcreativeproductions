@@ -27,3 +27,19 @@ export type Media = {
   // indefinitely, see CLAUDE.md "Media Library".
   mediaAssetId?: string;
 };
+
+// Phase 19A — plain data, deliberately NOT in
+// server/validate-video-upload.ts (which is server-only) since the client
+// upload form (VideoUploadForm.tsx) needs these for its file-picker
+// `accept` hint and a friendly pre-upload size check. Mirrors exactly how
+// LEAD_STATUSES was pulled out of the server-only leads query module in
+// Phase 18A for the same reason. The real, authoritative enforcement of
+// both values still happens server-side — see
+// src/server/validate-video-upload.ts and
+// src/app/api/media/video-upload-token/route.ts — this is only ever a
+// client-side UX hint, never trusted as the real check.
+export const ALLOWED_VIDEO_CONTENT_TYPES = ["video/mp4", "video/webm"] as const;
+
+// 100 MB — see CLAUDE.md "Video Media Library" for the full reasoning
+// (a realistic 60-90s promo/event-recap clip at a reasonable bitrate).
+export const MAX_VIDEO_UPLOAD_BYTES = 100 * 1024 * 1024;

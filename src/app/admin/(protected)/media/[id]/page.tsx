@@ -6,6 +6,10 @@ import {
   findProductsReferencingMediaAsset,
   findServicesReferencingMediaAsset,
   findProjectsReferencingMediaAsset,
+  findAssetsUsingAsPoster,
+  findHeroMediaUsage,
+  getActiveMediaAssetsForPicker,
+  getMediaAssetsByIds,
 } from "@/server/queries/media";
 import { productHref } from "@/data/products";
 import { serviceHref } from "@/data/services";
@@ -14,6 +18,8 @@ import StatusBadge from "@/components/admin/StatusBadge";
 import MediaEditForm from "@/components/admin/MediaEditForm";
 import MediaStatusToggle from "@/components/admin/MediaStatusToggle";
 import MediaReplaceForm from "@/components/admin/MediaReplaceForm";
+import VideoReplaceForm from "@/components/admin/VideoReplaceForm";
+import MediaPosterField from "@/components/admin/MediaPosterField";
 
 type MediaDetailPageProps = {
   params: Promise<{ id: string }>;
@@ -33,12 +39,19 @@ export default async function AdminMediaDetailPage({ params }: MediaDetailPagePr
     notFound();
   }
 
-  const [productRefs, serviceRefs, projectRefs] = await Promise.all([
+  const isVideo = asset.type === "video";
+
+  const [productRefs, serviceRefs, projectRefs, heroRefs, posterUsageRefs, posterPickerAssets, currentPosterMap] = await Promise.all([
     findProductsReferencingMediaAsset(id),
     findServicesReferencingMediaAsset(id),
     findProjectsReferencingMediaAsset(id),
+    findHeroMediaUsage(id),
+    asset.type === "image" ? findAssetsUsingAsPoster(id) : Promise.resolve([]),
+    isVideo ? getActiveMediaAssetsForPicker(["image"]) : Promise.resolve([]),
+    isVideo && asset.posterMediaAssetId ? getMediaAssetsByIds([asset.posterMediaAssetId]) : Promise.resolve(new Map()),
   ]);
-  const totalUsageCount = productRefs.length + serviceRefs.length + projectRefs.length;
+  const totalUsageCount = productRefs.length + serviceRefs.length + projectRefs.length + heroRefs.length + posterUsageRefs.length;
+  const currentPoster = asset.posterMediaAssetId ? (currentPosterMap.get(asset.posterMediaAssetId) ?? null) : null;
 
   return (
     <div>
@@ -61,7 +74,19 @@ export default async function AdminMediaDetailPage({ params }: MediaDetailPagePr
                 <Image src={asset.url} alt={asset.alt} fill sizes="480px" />
               </div>
             ) : (
-              <p className="admin-empty-state">Video preview isn&apos;t supported yet.</p>
+              // No autoplay — an admin previewing a file presses play
+              // themselves. playsInline + preload="metadata" match the
+              // same defaults the public VideoMedia component will use.
+              <video
+                className="admin-media-video-preview"
+                src={asset.url}
+                poster={currentPoster?.url}
+                controls
+                playsInline
+                preload="metadata"
+              >
+                Your browser doesn&apos;t support video playback.
+              </video>
             )}
           </div>
 
@@ -70,17 +95,55 @@ export default async function AdminMediaDetailPage({ params }: MediaDetailPagePr
             <MediaEditForm id={asset.id} alt={asset.alt} caption={asset.caption} />
           </div>
 
+          {isVideo && (
+            <div className="admin-detail-block">
+              <h2>Poster image</h2>
+              <p className="admin-form-section-help">
+                Shown in the Media Library grid and used as the video&apos;s still frame before playback. Only
+                active images from your library can be selected.
+              </p>
+              <MediaPosterField
+                videoId={asset.id}
+                currentPoster={currentPoster}
+                imageAssets={posterPickerAssets.map((a) => ({
+                  id: a.id,
+                  url: a.url,
+                  alt: a.alt,
+                  filename: a.filename,
+                  width: a.width,
+                  height: a.height,
+                }))}
+              />
+            </div>
+          )}
+
           <div className="admin-detail-block">
             <h2>Replace file</h2>
-            <MediaReplaceForm id={asset.id} />
+            {isVideo ? <VideoReplaceForm id={asset.id} /> : <MediaReplaceForm id={asset.id} />}
           </div>
 
           <div className="admin-detail-block">
             <h2>Used by</h2>
             {totalUsageCount === 0 ? (
-              <p className="admin-empty-state">Not currently used by any product, service, or portfolio project.</p>
+              <p className="admin-empty-state">
+                Not currently used by any product, service, portfolio project, homepage hero, or video poster.
+              </p>
             ) : (
               <>
+                {heroRefs.map((ref) => (
+                  <div className="admin-line-item" key={`hero-${ref.versionType}`}>
+                    <p className="admin-line-item-title">Homepage Hero</p>
+                    <p className="admin-line-item-meta">
+                      {ref.versionType === "published" ? (
+                        <>
+                          Homepage Hero (published) · <Link href="/">View on site</Link>
+                        </>
+                      ) : (
+                        "Homepage Hero (private draft — not public yet)"
+                      )}
+                    </p>
+                  </div>
+                ))}
                 {productRefs.map((ref) => (
                   <div className="admin-line-item" key={`product-${ref.productId}`}>
                     <p className="admin-line-item-title">{ref.productTitle}</p>
@@ -100,11 +163,6 @@ export default async function AdminMediaDetailPage({ params }: MediaDetailPagePr
                           Service (published) · <Link href={serviceHref(ref.serviceSlug)}>View on site</Link>
                         </>
                       ) : (
-                        // No /admin/services/[id] route exists yet (Phase
-                        // 17's admin UI is a future phase) — a private
-                        // draft has no public page to link to either, so
-                        // this is deliberately just a label, not a dead
-                        // link.
                         "Service (private draft — not public yet)"
                       )}
                     </p>
@@ -121,6 +179,14 @@ export default async function AdminMediaDetailPage({ params }: MediaDetailPagePr
                       ) : (
                         "Portfolio (private draft — not public yet)"
                       )}
+                    </p>
+                  </div>
+                ))}
+                {posterUsageRefs.map((ref) => (
+                  <div className="admin-line-item" key={`poster-${ref.videoAssetId}`}>
+                    <p className="admin-line-item-title">{ref.videoFilename}</p>
+                    <p className="admin-line-item-meta">
+                      Poster for video · <Link href={`/admin/media/${ref.videoAssetId}`}>View video asset</Link>
                     </p>
                   </div>
                 ))}

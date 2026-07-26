@@ -69,7 +69,23 @@ export function collectServiceValidationErrors(services: Service[]): string[] {
     if (service.gallery) {
       const seenGallerySrc = new Set<string>();
       service.gallery.forEach((image, i) => {
-        checkImagePath(image.src, image.mediaAssetId, `gallery[${i}].src`);
+        // Phase 19C — structural check only: a "video" item must be a
+        // real Media Library reference (no manual/local video path
+        // support). Whether that mediaAssetId actually resolves to a
+        // real, active, video-type asset is a deeper check requiring a
+        // database read — that lives in mutate-service.ts, not here,
+        // mirroring the exact sync-structural/async-real-data split
+        // projects.validate.ts/mutate-portfolio.ts already established.
+        if (image.type === "video" && !image.mediaAssetId) {
+          errors.push(`${label}: gallery[${i}] is a video but has no mediaAssetId — videos must be selected from the Media Library`);
+        }
+        // The local-path/folder check is image-path-shaped and doesn't
+        // apply to a video item at all (a video's src is always a
+        // resolved Media Library CDN URL, never a local path) — skip it
+        // entirely for video items, mirroring projects.validate.ts.
+        if (image.type !== "video") {
+          checkImagePath(image.src, image.mediaAssetId, `gallery[${i}].src`);
+        }
         if (seenGallerySrc.has(image.src)) {
           errors.push(`${label}: duplicate gallery image "${image.src}"`);
         } else {

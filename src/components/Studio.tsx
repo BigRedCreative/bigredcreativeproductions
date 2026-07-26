@@ -1,9 +1,16 @@
 import { siteConfig } from "@/config/site";
 import { sectionAnchors } from "@/config/sections";
 import { studio } from "@/data/homepage";
+import { getPublishedMotionSettings, getDraftMotionSettings } from "@/server/queries/motion";
 import SectionHeading from "./ui/SectionHeading";
+import MotionSection from "./MotionSection";
 
-export default function Studio() {
+type StudioProps = {
+  motionVariant?: "published" | "draft";
+};
+
+export default async function Studio({ motionVariant = "published" }: StudioProps = {}) {
+  const motion = motionVariant === "draft" ? await getDraftMotionSettings() : await getPublishedMotionSettings();
   return (
     <section className="studio section" id={sectionAnchors.studio}>
       <SectionHeading
@@ -11,7 +18,7 @@ export default function Studio() {
         kicker={studio.kicker}
         heading={studio.heading}
       />
-      <div className="studio-copy">
+      <MotionSection preset={motion.studioPreset} intensity={motion.intensity} className="studio-copy">
         <p>
           {siteConfig.name} {studio.introSuffix}
         </p>
@@ -21,7 +28,7 @@ export default function Studio() {
             <span key={principle}>{principle}</span>
           ))}
         </div>
-      </div>
+      </MotionSection>
     </section>
   );
 }

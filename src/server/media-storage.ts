@@ -1,6 +1,7 @@
 import "server-only";
 import { put, del } from "@vercel/blob";
 import type { AllowedImageFormat } from "@/server/validate-media-upload";
+import type { AllowedVideoFormat } from "@/server/validate-video-upload";
 
 // The one place this app talks to Vercel Blob. Storage keys are always
 // server-generated (crypto.randomUUID(), never the client's filename) and
@@ -13,6 +14,14 @@ import type { AllowedImageFormat } from "@/server/validate-media-upload";
 export function buildStorageKey(format: AllowedImageFormat): string {
   const extension = format === "jpeg" ? "jpg" : format;
   return `media/${crypto.randomUUID()}.${extension}`;
+}
+
+// Phase 19A — same convention, a distinct `media/video/` prefix purely
+// for at-a-glance readability in the Blob store's own file browser; the
+// actual identity/permanence guarantee comes from the random UUID, not
+// the prefix.
+export function buildVideoStorageKey(format: AllowedVideoFormat): string {
+  return `media/video/${crypto.randomUUID()}.${format}`;
 }
 
 export async function uploadImageBlob(

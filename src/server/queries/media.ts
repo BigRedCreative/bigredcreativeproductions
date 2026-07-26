@@ -6,10 +6,11 @@ import {
   products,
   serviceVersions,
   portfolioProjectVersions,
+  homepageContent,
   MEDIA_ASSET_STATUSES,
   MEDIA_ASSET_TYPES,
 } from "@/db/schema";
-import type { MediaAssetStatus, MediaAssetType, ContentVersionType } from "@/db/schema";
+import type { MediaAssetStatus, MediaAssetType, ContentVersionType, HomepageContentStatus } from "@/db/schema";
 
 // The ONE place anything in the app reads a media_assets row from Neon.
 // Server-only, zero insert/update/delete calls — mirrors the exact
@@ -30,6 +31,7 @@ export type MediaAsset = {
   alt: string;
   caption: string | null;
   status: MediaAssetStatus;
+  posterMediaAssetId: string | null;
   createdByAdminUserId: string | null;
   createdAt: Date;
   updatedAt: Date;
@@ -51,6 +53,7 @@ function mapMediaAssetRow(row: typeof mediaAssets.$inferSelect): MediaAsset {
     alt: row.alt,
     caption: row.caption,
     status: row.status as MediaAssetStatus,
+    posterMediaAssetId: row.posterMediaAssetId,
     createdByAdminUserId: row.createdByAdminUserId,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
@@ -137,22 +140,40 @@ export async function getMediaAssetsByIds(ids: string[]): Promise<Map<string, Me
   return new Map(rows.map((row) => [row.id, mapMediaAssetRow(row)]));
 }
 
-// The "Choose from Media Library" picker's data source — active images
+// The "Choose from Media Library" picker's data source — active assets
 // only, most recent first, capped at a flat page size. No search/filter
 // inside the picker yet: at this business's realistic scale a recent-first
 // list is sufficient for v1, and the full library (with search/filter) is
 // always one click away at /admin/media.
+//
+// Phase 19A — generalized to accept an explicit `allowedTypes` filter so
+// each field can decide what it allows (a hero-image-only field passes
+// ["image"], a future video-capable field could pass ["video"] or
+// ["image", "video"]). This is the mechanism that keeps a video from ever
+// being selectable into a component that only knows how to render
+// next/image — the picker offering it simply never appears. Every
+// EXISTING caller (ProductMediaEditor.tsx, LogoPickerField.tsx via
+// getActiveImageAssetsForPicker() below) is unaffected: image-only
+// pickers stay image-only, unchanged, per explicit Phase 19A instruction
+// not to widen any existing picker automatically.
 const PICKER_LIMIT = 60;
 
-export async function getActiveImageAssetsForPicker(): Promise<MediaAsset[]> {
+export async function getActiveMediaAssetsForPicker(allowedTypes: MediaAssetType[]): Promise<MediaAsset[]> {
   const db = getDb();
   const rows = await db
     .select()
     .from(mediaAssets)
-    .where(and(eq(mediaAssets.status, "active"), eq(mediaAssets.type, "image")))
+    .where(and(eq(mediaAssets.status, "active"), inArray(mediaAssets.type, allowedTypes)))
     .orderBy(desc(mediaAssets.createdAt))
     .limit(PICKER_LIMIT);
   return rows.map(mapMediaAssetRow);
+}
+
+// Unchanged call shape for every existing image-only picker — a thin
+// wrapper over the generalized function above, image-only exactly as
+// before.
+export async function getActiveImageAssetsForPicker(): Promise<MediaAsset[]> {
+  return getActiveMediaAssetsForPicker(["image"]);
 }
 
 // ---------------------------------------------------------------------
@@ -258,4 +279,46 @@ export async function findProjectsReferencingMediaAsset(mediaAssetId: string): P
     projectTitle: row.title,
     versionType: row.versionType as ContentVersionType,
   }));
+}
+
+// ---------------------------------------------------------------------
+// Phase 19A — the poster relationship is itself a form of "usage": if
+// image A is selected as the poster for video B, that's a real reference
+// the Media Library should be able to report on image A's own detail
+// page, exactly like a product/service/portfolio reference. A plain
+// column equality check (posterMediaAssetId is a scalar FK, not a JSONB
+// array like Product.media), not a containment scan.
+// ---------------------------------------------------------------------
+
+export type MediaAssetPosterUsageRef = { videoAssetId: string; videoFilename: string };
+
+export async function findAssetsUsingAsPoster(mediaAssetId: string): Promise<MediaAssetPosterUsageRef[]> {
+  const db = getDb();
+  const rows = await db
+    .select({ id: mediaAssets.id, filename: mediaAssets.filename })
+    .from(mediaAssets)
+    .where(eq(mediaAssets.posterMediaAssetId, mediaAssetId));
+  return rows.map((row) => ({ videoAssetId: row.id, videoFilename: row.filename }));
+}
+
+// ---------------------------------------------------------------------
+// Phase 19D-2 — Homepage Hero usage. homepage_content has no separate
+// versions table (unlike services/portfolio) — draft and published are
+// two rows on the SAME table, distinguished by `status`, so this is a
+// plain column-equality check (heroMediaAssetId is a scalar FK, not a
+// JSONB array) across both rows, tagged by which one matched — same
+// reasoning as the Service/Portfolio scans: a private draft's media
+// selection is real usage worth showing before archiving an asset, even
+// though it isn't public yet.
+// ---------------------------------------------------------------------
+
+export type MediaAssetHeroUsageRef = { versionType: HomepageContentStatus };
+
+export async function findHeroMediaUsage(mediaAssetId: string): Promise<MediaAssetHeroUsageRef[]> {
+  const db = getDb();
+  const rows = await db
+    .select({ status: homepageContent.status })
+    .from(homepageContent)
+    .where(eq(homepageContent.heroMediaAssetId, mediaAssetId));
+  return rows.map((row) => ({ versionType: row.status as HomepageContentStatus }));
 }

@@ -33,6 +33,11 @@ const sections = [
     title: "Branding",
     description: "Colors, buttons, and logos. Edit, preview privately, then publish.",
   },
+  {
+    href: "/admin/website/motion",
+    title: "Motion",
+    description: "Homepage entrance animations — intensity and per-section presets. Edit, preview privately, then publish.",
+  },
 ];
 
 export default function AdminWebsitePage() {
