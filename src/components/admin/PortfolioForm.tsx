@@ -10,13 +10,18 @@ import ResultsEditor from "./ResultsEditor";
 import CreditsEditor from "./CreditsEditor";
 import PortfolioHeroField from "./PortfolioHeroField";
 import PortfolioGalleryEditor from "./PortfolioGalleryEditor";
+import type { PortfolioGalleryPickerAsset } from "./PortfolioGalleryEditor";
 import PortfolioExternalLinkField from "./PortfolioExternalLinkField";
 import type { PickerMediaAsset } from "./ProductMediaEditor";
 
 type PortfolioFormProps = {
   action: (prevState: PortfolioFormState, formData: FormData) => Promise<PortfolioFormState>;
   initialProject?: Project;
+  // Hero stays image-only, per Phase 19B — never widen this picker.
   mediaAssets: PickerMediaAsset[];
+  // Phase 19B — gallery accepts image AND video assets, a separate,
+  // wider list than the hero's.
+  galleryMediaAssets: PortfolioGalleryPickerAsset[];
   submitLabel: string;
 };
 
@@ -32,7 +37,13 @@ const CLASS_NAME_OPTIONS: { value: string; label: string }[] = [
   { value: "project-cream", label: "Cream" },
 ];
 
-export default function PortfolioForm({ action, initialProject, mediaAssets, submitLabel }: PortfolioFormProps) {
+export default function PortfolioForm({
+  action,
+  initialProject,
+  mediaAssets,
+  galleryMediaAssets,
+  submitLabel,
+}: PortfolioFormProps) {
   const [state, formAction, isPending] = useActionState<PortfolioFormState, FormData>(action, null);
 
   const [title, setTitle] = useState(initialProject?.title ?? "");
@@ -176,7 +187,7 @@ export default function PortfolioForm({ action, initialProject, mediaAssets, sub
           <h2>Media</h2>
         </legend>
         <PortfolioHeroField name="heroImageJson" initialImage={initialProject?.heroImage} mediaAssets={mediaAssets} />
-        <PortfolioGalleryEditor name="galleryJson" initialImages={initialProject?.gallery ?? []} mediaAssets={mediaAssets} />
+        <PortfolioGalleryEditor name="galleryJson" initialImages={initialProject?.gallery ?? []} mediaAssets={galleryMediaAssets} />
       </fieldset>
 
       <fieldset className="admin-form-section">

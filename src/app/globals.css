@@ -247,6 +247,7 @@ footer>a{display:inline-block;font-size:clamp(30px,5vw,72px);letter-spacing:-.05
 .project-gallery-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:28px;margin-top:45px}
 .project-gallery-item{position:relative;aspect-ratio:4/3;border:var(--border-width) solid var(--black);overflow:hidden;background:var(--black)}
 .project-gallery-item img{object-fit:contain}
+.project-gallery-item video{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:var(--black)}
 .project-gallery-item--light{background:var(--cream)}
 .project-results-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:28px;margin-top:45px;border-top:var(--border-width) solid var(--black);padding-top:45px}
 .project-result{display:flex;flex-direction:column;gap:8px}

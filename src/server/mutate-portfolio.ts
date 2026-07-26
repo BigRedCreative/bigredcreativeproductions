@@ -5,7 +5,7 @@ import { redirect } from "next/navigation";
 import { and, asc, eq, ne } from "drizzle-orm";
 import { getDb } from "@/db";
 import { portfolioProjects, portfolioProjectVersions } from "@/db/schema";
-import { PROJECT_CATEGORIES, PROJECT_STATUSES } from "@/data/projects";
+import { PROJECT_CATEGORIES, PROJECT_STATUSES, sanitizeGalleryForStorage } from "@/data/projects";
 import { collectProjectValidationErrors } from "@/data/projects.validate";
 import { validateHref } from "@/server/validate-website-content";
 import { requireAdminUser } from "@/server/require-admin-user";
@@ -13,6 +13,7 @@ import { buildPortfolioVersionFromFormData } from "@/server/build-portfolio-form
 import type { PortfolioVersionContent } from "@/server/build-portfolio-form";
 import { recordAuditEvent } from "@/server/audit-log";
 import { getPortfolioEntityForAdmin } from "@/server/queries/portfolio";
+import { getMediaAssetsByIds } from "@/server/queries/media";
 
 // The only place a portfolio_projects/portfolio_project_versions row is
 // created or written. Direct mirror of mutate-service.ts's exact
@@ -80,6 +81,38 @@ function validateContent(content: PortfolioVersionContent): string[] {
   return errors;
 }
 
+// Phase 19B — the deeper, real-Neon-data check `projects.validate.ts`'s
+// synchronous structural check can't do (it has no database access, by
+// design — see that file's comment on why category/status lists are
+// passed in rather than imported). Never trusts that the admin picker's
+// own "active videos only" filtering was the only gate: a stale page, a
+// race with someone else archiving the asset between page-load and
+// submit, or a hand-crafted request are all caught identically here.
+// Deliberately only called from create/save-draft (new content being
+// written) — not from publish, which promotes already-validated draft
+// content rather than accepting new input.
+async function validateVideoGalleryReferences(content: PortfolioVersionContent): Promise<string[]> {
+  const videoItems = (content.gallery ?? []).filter((image) => image.type === "video");
+  if (videoItems.length === 0) return [];
+
+  const ids = [...new Set(videoItems.map((item) => item.mediaAssetId).filter((id): id is string => !!id))];
+  const assets = await getMediaAssetsByIds(ids);
+
+  const errors: string[] = [];
+  for (const item of videoItems) {
+    if (!item.mediaAssetId) continue; // already caught by the sync structural check
+    const asset = assets.get(item.mediaAssetId);
+    if (!asset) {
+      errors.push(`Gallery video "${item.alt || item.mediaAssetId}" no longer exists in the Media Library.`);
+    } else if (asset.type !== "video") {
+      errors.push(`Gallery item "${item.alt || asset.filename}" is marked as video but its Media Library asset is not a video.`);
+    } else if (asset.status !== "active") {
+      errors.push(`Gallery video "${asset.filename}" is archived and can't be selected for a new draft save. Choose an active video instead.`);
+    }
+  }
+  return errors;
+}
+
 function extractContentColumns(row: typeof portfolioProjectVersions.$inferSelect) {
   return {
     slug: row.slug,
@@ -122,7 +155,7 @@ function contentToColumns(content: PortfolioVersionContent) {
     heroMediaAssetId: content.heroImage?.mediaAssetId ?? null,
     heroImageSrc: content.heroImage?.src ?? null,
     heroImageAlt: content.heroImage?.alt ?? null,
-    gallery: content.gallery ?? null,
+    gallery: sanitizeGalleryForStorage(content.gallery),
     externalLink: content.externalLink ?? null,
     results: content.results ?? null,
     credits: content.credits ?? null,
@@ -148,6 +181,10 @@ export async function createPortfolioAction(
   const contentErrors = validateContent(parsed.content);
   if (contentErrors.length > 0) {
     return { errors: contentErrors };
+  }
+  const videoErrors = await validateVideoGalleryReferences(parsed.content);
+  if (videoErrors.length > 0) {
+    return { errors: videoErrors };
   }
 
   const db = getDb();
@@ -212,6 +249,10 @@ export async function savePortfolioDraftAction(
   const contentErrors = validateContent(parsed.content);
   if (contentErrors.length > 0) {
     return { errors: contentErrors };
+  }
+  const videoErrors = await validateVideoGalleryReferences(parsed.content);
+  if (videoErrors.length > 0) {
+    return { errors: videoErrors };
   }
 
   const db = getDb();

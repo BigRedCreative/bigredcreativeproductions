@@ -51,6 +51,16 @@ function mapProjectRow(
   };
 }
 
+// Phase 19B — extended with a SECOND resolution pass for video posters.
+// Step 1 (unchanged): resolve every heroImage/gallery mediaAssetId to its
+// live asset, overwriting `src` — this is what makes a Media Library
+// replace propagate to every project referencing it, for images and
+// video alike. Step 2 (new): for any resolved gallery item that is a
+// video with its own posterMediaAssetId (Phase 19A), batch-resolve THAT
+// id too and attach the poster's current URL as `posterSrc` — a
+// read-time-only enrichment, never written back to
+// portfolio_project_versions.gallery's JSONB. A video with no poster
+// configured simply keeps `posterSrc` undefined.
 async function resolveProjectsMedia(items: Project[]): Promise<Project[]> {
   const mediaAssetIds = new Set<string>();
   for (const project of items) {
@@ -62,6 +72,22 @@ async function resolveProjectsMedia(items: Project[]): Promise<Project[]> {
   if (mediaAssetIds.size === 0) return items;
 
   const assets = await getMediaAssetsByIds([...mediaAssetIds]);
+
+  const posterAssetIds = new Set<string>();
+  for (const asset of assets.values()) {
+    if (asset.type === "video" && asset.posterMediaAssetId) {
+      posterAssetIds.add(asset.posterMediaAssetId);
+    }
+  }
+  const posterAssets = posterAssetIds.size > 0 ? await getMediaAssetsByIds([...posterAssetIds]) : new Map();
+
+  function resolvePosterSrc(mediaAssetId: string | undefined): string | undefined {
+    if (!mediaAssetId) return undefined;
+    const asset = assets.get(mediaAssetId);
+    if (!asset || asset.type !== "video" || !asset.posterMediaAssetId) return undefined;
+    return posterAssets.get(asset.posterMediaAssetId)?.url;
+  }
+
   return items.map((project) => ({
     ...project,
     heroImage:
@@ -69,7 +95,9 @@ async function resolveProjectsMedia(items: Project[]): Promise<Project[]> {
         ? { ...project.heroImage, src: assets.get(project.heroImage.mediaAssetId)?.url ?? project.heroImage.src }
         : project.heroImage,
     gallery: project.gallery?.map((image) =>
-      image.mediaAssetId ? { ...image, src: assets.get(image.mediaAssetId)?.url ?? image.src } : image,
+      image.mediaAssetId
+        ? { ...image, src: assets.get(image.mediaAssetId)?.url ?? image.src, posterSrc: resolvePosterSrc(image.mediaAssetId) }
+        : image,
     ),
   }));
 }

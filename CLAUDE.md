@@ -1949,13 +1949,13 @@ Using your own real conversion (not seeded, not synthetic): your legitimate Phas
 
 No Stripe or any payment processor — `paymentStatus` is manual admin tracking only, never a real charge/refund. No revenue metrics on the dashboard — there's no real payment-processing data to compute one from honestly. No customer portal or customer-facing accounts/login. No SMS or email automation (status/payment changes are silent — no notification is sent to the customer). No invoice/PDF generation. Order line items support text/quantity/price only — no file attachments, no line-item-level intake forms (the existing `intakeRequired`/`intakeFormSlug`/`intakeStatus` columns remain unpopulated, same as every prior phase). None of this is scheduled here — recorded so a future phase doesn't have to re-derive the gap list from scratch.
 
-### Phase 19 (Phase 19A complete — see below; 19B not started)
+### Phase 19 (Phase 19A and 19B complete — see below)
 
-This section originally noted that the next major phase would bring Media Library video uploads. That work is now done — see "Video Media Foundation (Phase 19A)" below for the complete architecture. Still not started: public video playback on the storefront/portfolio/services/homepage (Phase 19A is deliberately Media Library foundation only — see that section's "Not built this phase"), and admin-controlled website animations/motion (Phase 19B).
+This section originally noted that the next major phase would bring Media Library video uploads. That work is now done — see "Video Media Foundation (Phase 19A)" below for the complete architecture. Phase 19B then wired that foundation into the first real public consumer — Portfolio gallery video — see "Portfolio Video Support (Phase 19B)" below. Still not started: video on Services/Product/the homepage (Phase 19B was deliberately scoped to Portfolio only — see that section's "Not built this phase"), and admin-controlled website animations/motion, now referred to as Phase 19C.
 
 ## Video Media Foundation (Phase 19A)
 
-**Status: the Media Library supports real video assets end to end — upload, storage, server-side validation, preview, poster images, replacement, and usage reporting — live-tested against your own real upload.** This is deliberately **infrastructure and admin support only**: no public page renders video yet, no animation controls exist, no AI video generation exists. Phase 19B (public video wiring for Portfolio/Services/Product, and admin-controlled animations) is a separate, later phase.
+**Status: the Media Library supports real video assets end to end — upload, storage, server-side validation, preview, poster images, replacement, and usage reporting — live-tested against your own real upload.** This is deliberately **infrastructure and admin support only**: no public page rendered video yet as of this phase, no animation controls exist, no AI video generation exists. See "Portfolio Video Support (Phase 19B)" below for the first real public consumer of this foundation.
 
 ### Supported formats and size limit
 
@@ -2046,7 +2046,106 @@ One real defect was found and fixed along the way, documented above rather than 
 
 ### What's still not built this phase (documented, not silently deferred)
 
-No public page renders video yet — `ProductMedia`/`ProjectGallery`/`ServiceHero` etc. still only ever render a video's poster image with a "VIDEO" badge, exactly as before Phase 19A. No `VideoMedia` public component has been built yet. No automatic poster-frame generation (poster selection is manual, from an already-uploaded image, exactly as approved). No orphaned-Blob cleanup for superseded replace targets (same documented, deferred Phase 15 policy, now also applying to video). No `Product.media`/`ServiceImage`/`ProjectImage` type widening for video beyond what already existed (`ServiceImage`/`ProjectImage` still have no `type` field at all — untouched, per explicit instruction not to widen them this phase). No transcoding, no adaptive bitrate streaming, no automatic duration extraction (deferred — the reliable, dependency-free approach identified is a browser-native `HTMLVideoElement.duration` read, not yet implemented). No animation controls, no AI video generation, no Mux/Cloudinary integration.
+**As true at the end of Phase 19A, before Phase 19B started:** no public page rendered video yet — `ProductMedia`/`ProjectGallery`/`ServiceHero` etc. still only ever rendered a video's poster image with a "VIDEO" badge. No `VideoMedia` public component had been built yet. No `Product.media`/`ServiceImage`/`ProjectImage` type widening for video beyond what already existed. **Phase 19B (below) has since built `VideoMedia` and widened `ProjectImage` specifically — for Portfolio galleries only.** `Product.media` and `ServiceImage` remain exactly as they were at the end of Phase 19A — still no `type` field, still no video rendering — see "Portfolio Video Support (Phase 19B)" → "What's still not built."
+
+No automatic poster-frame generation (poster selection is manual, from an already-uploaded image, exactly as approved). No orphaned-Blob cleanup for superseded replace targets (same documented, deferred Phase 15 policy, now also applying to video). No transcoding, no adaptive bitrate streaming, no automatic duration extraction (deferred — the reliable, dependency-free approach identified is a browser-native `HTMLVideoElement.duration` read, not yet implemented). No animation controls, no AI video generation, no Mux/Cloudinary integration.
+
+## Portfolio Video Support (Phase 19B)
+
+**Status: complete — Portfolio gallery items can now be real Media Library videos, rendered publicly with a genuine native `<video>` player, live-tested against your own real SP Juices video.** This is the first real public consumer of Phase 19A's Media Library video foundation. Deliberately scoped to **Portfolio galleries only** — the hero image field, Services, Product, and the homepage are untouched; see "What's still not built" below.
+
+### `ProjectImage` — additive, no migration
+
+`src/data/projects.ts`'s `ProjectImage` type gained two optional fields, requiring **no database migration** (`portfolio_project_versions.gallery` is a schema-less JSONB column — Postgres enforces nothing about its shape, so every gallery item authored before this phase, which has neither field, remains perfectly valid):
+
+```ts
+type ProjectImage = {
+  type?: "image" | "video";   // absent/undefined means "image" — the default, unchanged behavior
+  src: string;
+  alt: string;
+  lightBackground?: boolean;    // image-only presentation concept — never read for a video item
+  mediaAssetId?: string;      // the PERMANENT reference — same id/slug-style split as every other Media Library link in this codebase
+  posterSrc?: string;        // READ-TIME ONLY — see below
+};
+```
+
+A `type: "video"` item **must** carry `mediaAssetId` — there is no manual/local video path support, matching how every other Media-Library-only asset type already works here (enforced in `projects.validate.ts`, see below). `mediaAssetId` is the permanent link; `src` is a resolved, replaceable value — replacing the video's file in the Media Library propagates to every project referencing it automatically, the exact same guarantee already proven for `Product.media`/`ServiceImage`/brand logos.
+
+### `posterSrc` — read-time only, and the real bug that proved why
+
+`posterSrc` is populated **exclusively** by `resolveProjectsMedia()` in `src/server/queries/portfolio.ts`, on every read, by resolving a video asset's own `posterMediaAssetId` (Phase 19A) to that poster's *current* URL. It is **never** authored by the admin form and **must never** be written into `portfolio_project_versions.gallery`'s JSONB. A video with no poster configured simply keeps `posterSrc` undefined — no fallback image, no broken state, `VideoMedia` just renders without a `poster` attribute.
+
+**This was not just a design rule — a real acceptance-test bug proved it needed active enforcement.** The admin edit form seeds its local gallery-editor state from `getPortfolioEntityForAdmin()`, which — like every public read — returns the *already-resolved* gallery (posterSrc attached). An admin who saves the draft again after that initial load (a completely ordinary edit, unrelated to the video itself) silently wrote `posterSrc` back into storage, because the client form had no way to know that field wasn't supposed to persist. This was caught on the real SP Juices draft (see "Real SP Juices acceptance test" below), not invented speculatively.
+
+**The fix: `sanitizeGalleryForStorage()`** (`src/data/projects.ts`), the one place that decides what's allowed to reach the database. Called from `src/server/mutate-portfolio.ts`'s `contentToColumns()` — the single shared helper both `createPortfolioAction` and `savePortfolioDraftAction` go through — so both the create and every future draft-save path are covered by one choke point, not two separately-maintained copies. It rebuilds each gallery item via an **explicit allowlist** (`src`, `alt`, and only-if-present `type`/`mediaAssetId`/`lightBackground`) rather than a `delete image.posterSrc` — a deliberate choice so any *future* runtime-only field added to `ProjectImage` is stripped by default too, without needing to remember to update a denylist. The server is the authority here, never the client: a client could in principle submit any stale or fabricated field, and the write path silently discards anything not on the allowlist.
+
+`publishPortfolioAction` needed no separate change — it only ever copies an already-persisted (now-clean-by-construction) draft row onto the published row.
+
+### `VideoMedia` — the public player
+
+`src/components/VideoMedia.tsx` — a small, presentational-only component with **zero dependency on any admin code** (imports nothing from `src/components/admin` or `src/server`), receiving only already-resolved public data:
+
+```tsx
+<video
+  src={src}
+  poster={posterSrc}
+  controls
+  playsInline
+  preload="metadata"
+  aria-label={alt}
+>
+  Your browser doesn&apos;t support video playback.
+</video>
+```
+
+`controls`, `playsInline`, and `preload="metadata"` are always on; `autoplay`, `muted`, and `loop` are **never** forced — a deliberate, explicit design decision, not an oversight, matching the "no autoplay anywhere in this codebase" precedent Phase 19A's own detail-page `<video>` preview already established. `alt` becomes `aria-label` since `<video>` has no native `alt` attribute. Future per-video presentation controls (autoplay/muted/loop/object-fit, etc.) are intentionally **not** implemented yet — the data model already supports adding them later as more optional props, no redesign required.
+
+### `ProjectGallery` — mixed image/video, same responsive grid
+
+`src/components/ProjectGallery.tsx` branches per item: `type === "video"` renders `VideoMedia`, otherwise the existing `next/image`. Both share the exact same `.project-gallery-item` grid cell — one new CSS rule, `.project-gallery-item video{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:var(--black)}`, mirrors the letterboxed `object-fit:contain` treatment images already had, so a video occupies an identical, fully responsive cell shape at every breakpoint with no separate media query needed. `lightBackground` stays an image-only concept — a video item's container always keeps the default black letterboxing, never reads `lightBackground`.
+
+### Admin gallery picker — image and video, hero stays image-only
+
+`PortfolioGalleryEditor.tsx`'s "Choose from Media Library" picker now offers **both** active image and active video assets (`getActiveMediaAssetsForPicker(["image", "video"])`) — a deliberate widening scoped to the gallery only. **The hero image field (`PortfolioHeroField.tsx`) was not touched and stays image-only** (`getActiveImageAssetsForPicker()`, unchanged) — no public hero video exists or was requested. Selecting a video sets `mediaAssetId` + `type: "video"`; selecting an image preserves the exact pre-Phase-19B shape (no `type` field at all) — "preserve existing image behavior" taken literally, not just in spirit.
+
+**Poster thumbnail + "Video" badge — a real UX bug, found and fixed.** The first version of this picker rendered a video tile as bare text reading "Video," with no thumbnail, while the video's own poster image sat in the same grid as a normal, fully-visible picture. A real user, during acceptance testing, clicked the poster's picture-looking tile believing it *was* the video — and the wrong asset (`mediaAssetId` pointing at the poster image, no `type` set) got saved. The fix: the picker now resolves each video's poster URL server-side (`new/page.tsx`/`[id]/edit/page.tsx` batch-fetch via `getMediaAssetsByIds`) and shows that poster image with a small "Video" badge overlay — reusing `/admin/media`'s own existing `.admin-media-card-video-badge` pattern from Phase 19A verbatim, not a new visual language. A video with no poster set still falls back to text, now reading `"Video (no poster set)"` for clarity. This was a genuine, confirmed root cause — not a rendering/CSS defect in the public pipeline, which was correct throughout.
+
+### Validation — sync structural, then async real-data
+
+Two layers, matching the exact split already established for `relatedServiceSlug` in Phase 17:
+
+- **`projects.validate.ts`** (synchronous, no database access): a `type: "video"` item must carry `mediaAssetId`; the local-path/folder check is skipped entirely for video items (a video's `src` is always a resolved Media Library CDN URL, never a local path).
+- **`mutate-portfolio.ts`**'s `validateVideoGalleryReferences()` (async, real Neon read): for every `type: "video"` gallery item, independently verifies the referenced asset exists, is genuinely `type: "video"`, and is `status: "active"` — never trusting that the picker's own "active videos only" filtering was the only gate, since a stale page, a race with someone archiving the asset mid-edit, or a hand-crafted request could all bypass client-side filtering. Called from `createPortfolioAction` and `savePortfolioDraftAction` — **deliberately not called from `publishPortfolioAction`**, which promotes already-validated draft content rather than accepting new input, matching the literal "rejected for NEW draft saves" requirement.
+
+### Archived assets — the existing Media Library precedent, reused unmodified
+
+No new behavior was invented here — Phase 15/19A's existing rule was simply reapplied: **archiving a referenced video or poster never breaks an existing gallery reference.** `resolveProjectsMedia()` resolves by id with no status filter, so a project that already references an archived video (or whose video's poster was later archived) keeps rendering exactly as before — only *new* draft saves reject an archived video (via the async check above). Archiving only removes an asset from future picker selections (`getActiveMediaAssetsForPicker()` filters `status = 'active'`); it never touches, deletes, or hides an already-referenced asset's Blob or its public rendering.
+
+### Usage scanning
+
+`findProjectsReferencingMediaAsset()` (`src/server/queries/media.ts`, unmodified since Phase 17) needed **zero code changes** to detect a video reference — confirmed, not assumed: Postgres's JSONB containment operator (`gallery @> [{"mediaAssetId": "..."}]`) matches on the presence of that key-value pair regardless of what other fields (`type`, `posterSrc`, etc.) are also present on the item. `/admin/media/[id]`'s "Used by" block for the poster image also correctly reports the video via `findAssetsUsingAsPoster()` (Phase 19A, also unmodified).
+
+### Draft → preview → publish isolation
+
+Unchanged from the Services + Portfolio Admin architecture Phase 17 established — Save Draft only ever writes the `draft` version row; the public site and the published row are untouched until an explicit Publish. `/admin/portfolio/[id]/preview` reuses the exact real public components (`ProjectGallery` included) against the draft's resolved content, so a video previewed there is provably what the public page will render once published, not a reconstruction.
+
+### Real SP Juices acceptance test — the full, honest history
+
+Using your own real project and your own real video/poster (both uploaded in Phase 19A's own acceptance test): you added the video to SP Juices' draft gallery, previewed it, and hit the two real bugs documented above in the process — first the picker-tile mis-click (the poster image got added instead of the video, confirmed by reading the raw draft JSONB directly rather than assumed), then, after correcting that, the `posterSrc`-persistence bug (confirmed the same way, on the corrected draft, before you clicked Publish). Both were root-caused, fixed, and the already-contaminated draft row was corrected via a one-off script that reused the real, now-exported `sanitizeGalleryForStorage()` — verified byte-for-byte to change *only* the removal of `posterSrc`, nothing else, before being applied. You then re-saved and published for real. Final, fully-verified state: SP Juices' permanent project id unchanged throughout; draft and published content synchronized; the video present exactly once, `mediaAssetId` correct, `type: "video"`; zero `posterSrc` anywhere in either raw JSONB, confirmed by a full scan across all 8 `portfolio_project_versions` rows (all 4 projects, draft + published) finding no other contaminated row; the poster resolved correctly at read time from the video's `posterMediaAssetId`; all 13 original SP Juices images intact, in original order, with `lightBackground: true` still correct on the logo item; the accidental poster-image item gone; usage scanning correctly reporting the reference from both the poster's and the video's side; both Media Library assets still `active`; no duplicate rows anywhere; a complete, correctly owner-attributed audit trail (`portfolio.draft_saved` ×5, `portfolio.published` ×2 — the first publish predates the fixes, the second is the real, final one); and every other real record in the database (Brand `#E70810`, the real Branding service edit, the real Product Packaging edit, Custom Graphic Design, the homepage, 7 Services, the other 3 Portfolio projects, leads/customers/notes/orders) confirmed completely unaffected. **This is real, live, currently-published content — not a placeholder to revert.**
+
+### What's still not built
+
+Services and Product galleries/media are untouched — `ServiceImage` and `Product.media` still have no `type` field and cannot reference a video, by explicit scope decision, not oversight. No homepage video. No hero-image video (the hero picker stays image-only, unwidened, on purpose). No animation, autoplay, or motion controls of any kind (see "Phase 19C" below). No AI-generated video of any kind. No testimonial-reel or case-study-video-specific UI beyond the generic gallery item. No `object-fit`/aspect-ratio override per video — every video shares the same `.project-gallery-item` letterboxed treatment images already use.
+
+### Roadmap notes (documentation only — nothing here is scheduled or implemented)
+
+- **Services video** — would need `ServiceImage` widened the same additive way `ProjectImage` was here (`type`, `posterSrc`), plus a Services-specific gallery/hero picker update mirroring `PortfolioGalleryEditor.tsx`'s exact pattern. Not started.
+- **Homepage video** — `homepage_content`'s reserved, still-unrendered `heroImageSrc` field would need its own video-capable equivalent, or a dedicated new field; `Hero.tsx` renders no image today, let alone video. Not started.
+- **Phase 19C — animation/motion controls** — admin-controlled website animations, referenced since Phase 19A's own documentation as the next planned phase after video. Not started; no schema, no UI, no design decisions made yet.
+- **Big Red Brain** — the long-standing, explicitly permission-controlled future AI layer documented since Checkout/Orders (Phase 10). Still no implementation. Video content (once it exists across more than just Portfolio) would be exactly the kind of public-facing asset a future Big Red Brain layer could reference — but the private/public data boundary already documented everywhere else in this file applies unchanged: customer/order/payment/internal-note data stays private regardless of what else this future layer can see.
+- **AI Creative Studio** — no implementation, no schema, no architecture decided. A future phase, referenced here only so it isn't invented from scratch without this note.
+- **AI-generated branding videos** — the original motivating use case named when Phase 19B's architecture was first approved (an eventual Big Red Brain / AI Creative Studio capability to generate on-brand promotional video). Nothing about that generation pipeline exists yet — Phase 19B only built the place such a video would eventually be *displayed* (a real Media Library video asset, attached to a Portfolio gallery item, rendered by `VideoMedia`). The display path is real and proven; the generation path is entirely future work.
+- **Testimonial reels** — a named future use case for the same Portfolio (or a future Services) video gallery — short client testimonial clips. No dedicated schema or UI exists; today's generic video gallery item is the only building block, and it's sufficient to hold one manually uploaded via the Media Library today.
 
 ## Rules for creating new components
 

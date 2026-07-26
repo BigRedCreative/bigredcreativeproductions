@@ -28,18 +28,63 @@ export type ProjectStatus = (typeof PROJECT_STATUSES)[number];
 export const MAX_FEATURED_PROJECTS = 3;
 
 export type ProjectImage = {
+  // Phase 19B — optional, additive. Absent/undefined means "image", so
+  // every gallery item authored before this phase (which has no `type`
+  // field at all) continues to render exactly as before — no backfill
+  // needed. Only ever set to "video" for a real Media Library video
+  // selection; manual/local paths and Media Library images both stay
+  // implicitly "image". A "video" item MUST carry `mediaAssetId` — there
+  // is no manual/local video path support, matching how every other
+  // Media-Library-only asset type already works in this codebase.
+  type?: "image" | "video";
   src: string;
   alt: string;
   // Gallery items default to a dark background (matches most label/product
   // artwork, which is already full-bleed black). Set true only for images
   // that read poorly on black — e.g. a dark-outlined logo on a transparent
-  // background.
+  // background. Image-only presentation concept — never read for a video
+  // item.
   lightBackground?: boolean;
   // Phase 17 — optional link to a Media Library asset, same non-breaking
   // extension already made to Media (Phase 15) and ServiceImage. See
   // src/server/queries/portfolio.ts for the live-resolution read.
   mediaAssetId?: string;
+  // Phase 19B — READ-TIME ONLY. Never authored by the admin form, never
+  // persisted into portfolio_project_versions.gallery's JSONB. Populated
+  // exclusively by resolveProjectsMedia() in
+  // src/server/queries/portfolio.ts, which resolves a video asset's own
+  // posterMediaAssetId (Phase 19A) to that poster's current URL on every
+  // read — so replacing a video's poster in the Media Library updates
+  // every project referencing that video automatically, the same
+  // propagation guarantee `src` itself already has via `mediaAssetId`.
+  // Stays undefined when the video has no poster configured, or for any
+  // non-video item.
+  posterSrc?: string;
 };
+
+// The one place that decides what's ALLOWED to reach
+// portfolio_project_versions.gallery's JSONB. `posterSrc` is READ-TIME
+// ONLY (see above) — a real bug confirmed it can otherwise round-trip
+// back into storage: the admin edit form's initial state is seeded from
+// the already-resolved (posterSrc-attached) gallery returned by
+// getPortfolioEntityForAdmin(), so an unrelated edit + save silently
+// wrote it back. Rebuilt via an explicit allowlist (never a `delete
+// image.posterSrc`) so any FUTURE runtime-only field added to
+// ProjectImage is stripped by default too — the server is the authority
+// here, not the client, since a client could submit any stale/runtime
+// field. Called from src/server/mutate-portfolio.ts's contentToColumns(),
+// which both createPortfolioAction and savePortfolioDraftAction go
+// through — the one shared choke point for every gallery write.
+export function sanitizeGalleryForStorage(gallery: ProjectImage[] | null | undefined): ProjectImage[] | null {
+  if (!gallery) return null;
+  return gallery.map((image) => {
+    const sanitized: ProjectImage = { src: image.src, alt: image.alt };
+    if (image.type !== undefined) sanitized.type = image.type;
+    if (image.mediaAssetId !== undefined) sanitized.mediaAssetId = image.mediaAssetId;
+    if (image.lightBackground !== undefined) sanitized.lightBackground = image.lightBackground;
+    return sanitized;
+  });
+}
 
 export type ProjectResult = {
   label: string;
