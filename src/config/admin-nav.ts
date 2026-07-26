@@ -18,5 +18,5 @@ export const adminNavItems: AdminNavItem[] = [
   { label: "Media", href: "/admin/media", available: true },
   { label: "Website", href: "/admin/website", available: true },
   { label: "Settings", available: false },
-  { label: "Big Red Brain", available: false },
+  { label: "Big Red Brain", href: "/admin/brain", available: true },
 ];

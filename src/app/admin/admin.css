@@ -454,6 +454,10 @@
   text-decoration: line-through;
 }
 
+.admin-badge-failed {
+  color: var(--red);
+}
+
 .admin-estimate-flag {
   font-size: 10px;
   text-transform: uppercase;

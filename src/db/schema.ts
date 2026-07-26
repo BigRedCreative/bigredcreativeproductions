@@ -19,6 +19,14 @@ import type { OrderPricingSummary } from "@/data/orders";
 import type { ServiceImage, ServiceProcessStep } from "@/data/services";
 import type { ProjectImage, ProjectExternalLink, ProjectResult, ProjectCredit } from "@/data/projects";
 import type { MotionSettingsStatus, MotionIntensity, MotionPreset, HeroEntrance } from "@/data/motion";
+import type {
+  BrainRequestStatus,
+  BrainRequestSource,
+  BrainRequestType,
+  BrainErrorCategory,
+  BrainRelatedEntityType,
+  BrainUsageMetadata,
+} from "@/data/brain";
 
 // Server-side persistence layer — see CLAUDE.md "Backend + database
 // foundation" for the full architecture writeup. This schema deliberately
@@ -916,3 +924,106 @@ export const motionSettings = pgTable("motion_settings", {
   processStagger: boolean("process_stagger").notNull().default(false),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+// ---------------------------------------------------------------------
+// Phase 20A — Big Red Brain foundation. brain_requests is a plain,
+// append-only HISTORY/AUDIT table for READ + RECOMMEND requests only — it
+// is not a queue, not a conversation/session table, and not a generic
+// "AI did something" log. See CLAUDE.md's Phase 20 architecture report for
+// the full safety model this table exists to support.
+//
+// This table stores SAFE SUMMARIES only, never the raw material a request
+// was built from or produced. It must never contain: a full assembled
+// prompt/context, full provider output, provider credentials, environment
+// variables, raw customer notes/messages (only a reduced, safe summary of
+// them), or arbitrary HTML/JS. prompt_summary/response_summary are
+// deliberately short, generated summaries — not "the first N characters of
+// whatever the model said" — enforced at BRAIN_PROMPT_SUMMARY_MAX_LENGTH/
+// BRAIN_RESPONSE_SUMMARY_MAX_LENGTH (src/data/brain.ts) by the future
+// mutate-brain.ts write path, the same "closed vocabulary/length rule
+// lives in application code, not a SQL CHECK constraint" convention every
+// other content rule in this schema already follows.
+//
+// related_entity_type/related_entity_id are a polymorphic, APPLICATION-
+// LEVEL-ONLY reference — deliberately no foreign key, since the same
+// column pair points at different tables (leads/customers/orders/
+// portfolio_projects/services/media_assets) depending on
+// related_entity_type. This is the exact same accepted tradeoff
+// notes.entityType/entityId and audit_log.entityType/entityId already
+// make in this schema — referential integrity here is an application
+// guarantee (see src/data/brain.ts's BRAIN_RELATED_ENTITY_TYPES), not a
+// database-enforced one.
+//
+// status is closed to 'completed' | 'failed' in Phase 20A on purpose —
+// every real request in this phase is one synchronous provider round
+// trip. 'pending'/'running' states belong to a future async generation-job
+// table (image/video), not this one — see BRAIN_REQUEST_STATUSES's own
+// comment in src/data/brain.ts.
+//
+// No brain_requests row is ever written by anything other than a future
+// mutate-brain.ts Server Action that has already independently called
+// requireAdminUser() — matching the standing rule every other admin
+// mutation in this codebase already follows since Phase 12. This table
+// grants NO write access to homepage_content, services, portfolio_projects,
+// products, customers, orders, leads, motion_settings, or brand_settings —
+// Phase 20A remains READ + RECOMMEND only; nothing here is a path to any
+// of those tables.
+// ---------------------------------------------------------------------
+export const brainRequests = pgTable(
+  "brain_requests",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    requestedByAdminUserId: uuid("requested_by_admin_user_id").references(() => adminUsers.id, { onDelete: "set null" }),
+    requestType: text("request_type").notNull().$type<BrainRequestType>(),
+    requestSource: text("request_source").notNull().$type<BrainRequestSource>(),
+    // Polymorphic, application-level only — see the table comment above.
+    // No foreign key by design; validated against BRAIN_RELATED_ENTITY_TYPES
+    // at the application layer, not by the database.
+    relatedEntityType: text("related_entity_type").$type<BrainRelatedEntityType>(),
+    relatedEntityId: text("related_entity_id"),
+    // SAFE, short, human-readable summary of what was asked — never the
+    // full assembled prompt/context sent to the provider. See the table
+    // comment above and BRAIN_PROMPT_SUMMARY_MAX_LENGTH.
+    promptSummary: text("prompt_summary").notNull(),
+    // SAFE, short, generated summary of what was returned — never a large
+    // raw model response, never raw HTML. Nullable because a failed
+    // request has no response to summarize. See BRAIN_RESPONSE_SUMMARY_MAX_LENGTH.
+    responseSummary: text("response_summary"),
+    // Free text, not an enum — a provider/model name changes on a faster
+    // timescale than this schema should chase (see CLAUDE.md's Phase 20
+    // architecture report, "Provider abstraction"). Nothing branches on
+    // this column's literal value except an application-level allowlist
+    // check at request time; it is never interpolated into a query.
+    provider: text("provider").notNull(),
+    model: text("model").notNull(),
+    status: text("status").notNull().$type<BrainRequestStatus>(),
+    // Small, numeric, non-sensitive only — see BrainUsageMetadata's own
+    // comment in src/data/brain.ts for the exact allowed shape. Never
+    // prompts, never model output, never PII, never credentials.
+    usageMetadata: jsonb("usage_metadata").$type<BrainUsageMetadata>(),
+    errorCategory: text("error_category").$type<BrainErrorCategory>(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    // Every future admin-facing list of Brain activity is "most recent
+    // first" — a plain history page, request-usage-cap queries (Phase 20's
+    // cost controls), and the future /admin/brain "recent activity" view
+    // all order by this column.
+    index("brain_requests_created_at_idx").on(table.createdAt),
+    // Powers "my request history" / per-admin usage-cap queries — the same
+    // shape as leads_customer_id_idx's own reasoning (a real, planned
+    // lookup by this column, not a speculative one).
+    index("brain_requests_requested_by_admin_user_id_idx").on(table.requestedByAdminUserId),
+    // Powers "what has Big Red Brain already said about THIS lead/order/
+    // portfolio project" — a context-aware entry point (Customer detail,
+    // Order detail, etc., see CLAUDE.md's Phase 20 architecture report,
+    // "Context-aware entry points") looking up prior requests scoped to
+    // its own entity, mirroring notes_entity_idx's exact reasoning and
+    // shape for the same kind of polymorphic lookup.
+    index("brain_requests_related_entity_idx").on(table.relatedEntityType, table.relatedEntityId),
+  ],
+);
+
+export const brainRequestsRelations = relations(brainRequests, ({ one }) => ({
+  requestedByAdminUser: one(adminUsers, { fields: [brainRequests.requestedByAdminUserId], references: [adminUsers.id] }),
+}));
