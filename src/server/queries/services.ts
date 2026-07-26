@@ -62,6 +62,17 @@ function mapServiceRow(
 // Items with no mediaAssetId (every current service, post-seed) pass
 // through completely unchanged — this is what "preserve legacy hero/gallery
 // paths exactly when no mediaAssetId exists" means in practice.
+//
+// Phase 19C — extended with a SECOND resolution pass for video posters,
+// a direct structural port of resolveProjectsMedia()'s equivalent
+// extension in src/server/queries/portfolio.ts. Step 1 (unchanged):
+// resolve every heroImage/gallery mediaAssetId to its live asset,
+// overwriting `src`. Step 2 (new): for any resolved gallery item that is
+// a video with its own posterMediaAssetId (Phase 19A), batch-resolve
+// THAT id too and attach the poster's current URL as `posterSrc` — a
+// read-time-only enrichment, never written back to
+// service_versions.gallery's JSONB. A video with no poster configured
+// simply keeps `posterSrc` undefined.
 async function resolveServicesMedia(items: Service[]): Promise<Service[]> {
   const mediaAssetIds = new Set<string>();
   for (const service of items) {
@@ -73,6 +84,22 @@ async function resolveServicesMedia(items: Service[]): Promise<Service[]> {
   if (mediaAssetIds.size === 0) return items;
 
   const assets = await getMediaAssetsByIds([...mediaAssetIds]);
+
+  const posterAssetIds = new Set<string>();
+  for (const asset of assets.values()) {
+    if (asset.type === "video" && asset.posterMediaAssetId) {
+      posterAssetIds.add(asset.posterMediaAssetId);
+    }
+  }
+  const posterAssets = posterAssetIds.size > 0 ? await getMediaAssetsByIds([...posterAssetIds]) : new Map();
+
+  function resolvePosterSrc(mediaAssetId: string | undefined): string | undefined {
+    if (!mediaAssetId) return undefined;
+    const asset = assets.get(mediaAssetId);
+    if (!asset || asset.type !== "video" || !asset.posterMediaAssetId) return undefined;
+    return posterAssets.get(asset.posterMediaAssetId)?.url;
+  }
+
   return items.map((service) => ({
     ...service,
     heroImage:
@@ -80,7 +107,9 @@ async function resolveServicesMedia(items: Service[]): Promise<Service[]> {
         ? { ...service.heroImage, src: assets.get(service.heroImage.mediaAssetId)?.url ?? service.heroImage.src }
         : service.heroImage,
     gallery: service.gallery?.map((image) =>
-      image.mediaAssetId ? { ...image, src: assets.get(image.mediaAssetId)?.url ?? image.src } : image,
+      image.mediaAssetId
+        ? { ...image, src: assets.get(image.mediaAssetId)?.url ?? image.src, posterSrc: resolvePosterSrc(image.mediaAssetId) }
+        : image,
     ),
   }));
 }

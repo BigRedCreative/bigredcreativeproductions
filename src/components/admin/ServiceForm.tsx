@@ -8,12 +8,17 @@ import StringListEditor from "./StringListEditor";
 import ProcessStepsEditor from "./ProcessStepsEditor";
 import ServiceHeroField from "./ServiceHeroField";
 import ServiceGalleryEditor from "./ServiceGalleryEditor";
+import type { ServiceGalleryPickerAsset } from "./ServiceGalleryEditor";
 import type { PickerMediaAsset } from "./ProductMediaEditor";
 
 type ServiceFormProps = {
   action: (prevState: ServiceFormState, formData: FormData) => Promise<ServiceFormState>;
   initialService?: Service;
+  // Hero stays image-only, per Phase 19C — never widen this picker.
   mediaAssets: PickerMediaAsset[];
+  // Phase 19C — gallery accepts image AND video assets, a separate,
+  // wider list than the hero's.
+  galleryMediaAssets: ServiceGalleryPickerAsset[];
   submitLabel: string;
 };
 
@@ -23,7 +28,13 @@ type ServiceFormProps = {
 // so the Phase 13 "every <select> must be controlled" rule has nothing to
 // apply to. Title/slug still follow the same auto-slug-until-touched
 // pattern ProductForm established.
-export default function ServiceForm({ action, initialService, mediaAssets, submitLabel }: ServiceFormProps) {
+export default function ServiceForm({
+  action,
+  initialService,
+  mediaAssets,
+  galleryMediaAssets,
+  submitLabel,
+}: ServiceFormProps) {
   const [state, formAction, isPending] = useActionState<ServiceFormState, FormData>(action, null);
 
   const [title, setTitle] = useState(initialService?.title ?? "");
@@ -152,7 +163,7 @@ export default function ServiceForm({ action, initialService, mediaAssets, submi
         <ServiceGalleryEditor
           name="galleryJson"
           initialImages={initialService?.gallery ?? []}
-          mediaAssets={mediaAssets}
+          mediaAssets={galleryMediaAssets}
         />
       </fieldset>
 

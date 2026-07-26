@@ -7,6 +7,7 @@ import ServiceHero from "@/components/ServiceHero";
 import ServiceCapabilities from "@/components/ServiceCapabilities";
 import ServiceDeliverables from "@/components/ServiceDeliverables";
 import ServiceProcess from "@/components/ServiceProcess";
+import ServiceGallery from "@/components/ServiceGallery";
 import ServiceCTA from "@/components/ServiceCTA";
 import { getPublishedServices, getServiceBySlug } from "@/server/queries/services";
 
@@ -65,6 +66,7 @@ export default async function ServicePage({ params }: ServicePageProps) {
         <ServiceCapabilities service={service} />
         <ServiceDeliverables service={service} />
         <ServiceProcess service={service} />
+        {service.gallery && service.gallery.length > 0 && <ServiceGallery images={service.gallery} />}
         <ServiceCTA service={service} />
         <Footer />
       </main>

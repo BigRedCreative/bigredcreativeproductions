@@ -7,11 +7,56 @@ import { validateServices } from "./services.validate";
 // row before this reaches a page, same as Product.media. Every entry in
 // the fallback array below has no mediaAssetId, so this needs no edits
 // there.
+//
+// Phase 19C — gallery-only video support, additive, no migration (this
+// column is schema-less JSONB). Deliberately parallel to, but NOT shared
+// with, Portfolio's ProjectImage — the two content systems evolve
+// independently by design (see CLAUDE.md "Services + Portfolio Admin"),
+// and ServiceImage has never had a lightBackground concept, so a shared
+// type would carry a field this one doesn't need.
 export type ServiceImage = {
+  // Absent/undefined means "image" — every gallery item authored before
+  // this phase (no `type` field at all) continues to render exactly as
+  // before. Only ever set to "video" for a real Media Library video
+  // selection; no manual/local video path support, matching how every
+  // other Media-Library-only asset type already works in this codebase.
+  type?: "image" | "video";
   src: string;
   alt: string;
   mediaAssetId?: string;
+  // READ-TIME ONLY. Never authored by the admin form, never persisted
+  // into service_versions.gallery's JSONB — see
+  // sanitizeServiceGalleryForStorage() below, and the real bug in Phase
+  // 19B's Portfolio implementation that proved this needs active,
+  // server-side enforcement, not just a comment. Populated exclusively by
+  // resolveServicesMedia() in src/server/queries/services.ts, resolving a
+  // video asset's own posterMediaAssetId (Phase 19A) to that poster's
+  // current URL on every read. Stays undefined when the video has no
+  // poster configured, or for any non-video item.
+  posterSrc?: string;
 };
+
+// The one place that decides what's ALLOWED to reach
+// service_versions.gallery's JSONB. Direct structural mirror of
+// sanitizeGalleryForStorage() in src/data/projects.ts — kept as a
+// SEPARATE function on purpose (not generalized/shared), per explicit
+// Phase 19C decision: Services and Portfolio are intentionally parallel
+// but independently evolving systems, and their gallery shapes may
+// diverge further later. Rebuilt via an explicit allowlist (never a
+// `delete image.posterSrc`) so any FUTURE runtime-only field added to
+// ServiceImage is stripped by default too — the server is the authority
+// here, not the client. Called from src/server/mutate-service.ts's
+// contentToColumns(), the one shared choke point both createServiceAction
+// and saveServiceDraftAction go through.
+export function sanitizeServiceGalleryForStorage(gallery: ServiceImage[] | null | undefined): ServiceImage[] | null {
+  if (!gallery) return null;
+  return gallery.map((image) => {
+    const sanitized: ServiceImage = { src: image.src, alt: image.alt };
+    if (image.type !== undefined) sanitized.type = image.type;
+    if (image.mediaAssetId !== undefined) sanitized.mediaAssetId = image.mediaAssetId;
+    return sanitized;
+  });
+}
 
 export type ServiceProcessStep = {
   title: string;
