@@ -5,6 +5,7 @@ import type { CartItem, ProductConfiguration } from "@/data/cart";
 import { getAuthoritativeProduct } from "@/server/product-source";
 import { verifyConfigurationAgainstProduct } from "@/server/verify-configuration";
 import { createOrder } from "@/server/create-order";
+import { checkOrderCreationRateLimit, extractClientIp } from "@/server/rate-limit";
 
 // This endpoint NEVER trusts client-calculated prices. The client sends
 // only *configuration* (which product, which package/options/add-ons,
@@ -37,6 +38,38 @@ const orderRequestSchema = z.object({
 });
 
 export async function POST(request: Request) {
+  // Phase 21C-1 — abuse/rate-limit protection, checked BEFORE anything
+  // else, including request.json() — a blocked request never spends any
+  // work parsing/validating a potentially large or malicious body. Keyed
+  // on the HMAC of the requester's IP only (never email/name/order id/
+  // request-body content — this route is intentionally public, with no
+  // session to key against). See CLAUDE.md's Phase 21C-1 writeup for the
+  // full design.
+  //
+  // A limiter INFRASTRUCTURE failure (DB unreachable, AUTH_SECRET
+  // unavailable) is caught here and turned into a controlled, fail-closed
+  // 503 — never an uncaught exception, and never a false "allowed". No
+  // customer/order/order-line/audit row of any kind is created on this
+  // path; nothing about the failure (raw IP, HMAC key, DB error detail)
+  // is exposed to the client or logged beyond a minimal, sanitized line.
+  let rateLimitResult: Awaited<ReturnType<typeof checkOrderCreationRateLimit>>;
+  try {
+    const clientIp = extractClientIp(request.headers);
+    rateLimitResult = await checkOrderCreationRateLimit(clientIp);
+  } catch {
+    console.error("Order creation rate limiter unavailable");
+    return NextResponse.json(
+      { error: "Service temporarily unavailable. Please try again later." },
+      { status: 503 },
+    );
+  }
+  if (!rateLimitResult.allowed) {
+    return NextResponse.json(
+      { error: "Too many requests. Please try again later." },
+      { status: 429, headers: { "Retry-After": String(rateLimitResult.retryAfterSeconds) } },
+    );
+  }
+
   let body: unknown;
   try {
     body = await request.json();
