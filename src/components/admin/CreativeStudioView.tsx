@@ -124,6 +124,19 @@ export default function CreativeStudioView({ referenceAssets, portfolioOptions, 
   const [discardState, setDiscardState] = useState<DiscardState>(null);
   const [discardPending, setDiscardPending] = useState(false);
 
+  // Phase 20C-2 — tracks whether the current Review screen was reached via
+  // "Generate Another Variation" (from an existing preview) rather than a
+  // fresh brief, purely to show clearer cost/state messaging — does not
+  // change any validation or provider-call behavior.
+  const [viaVariation, setViaVariation] = useState(false);
+
+  // Phase 20C-2 — the owner-reviewed filename/alt/caption shown just
+  // before Save, submitted alongside it. Re-seeded with sensible defaults
+  // whenever a new preview appears (see handleGenerateImage below).
+  const [saveFilename, setSaveFilename] = useState("");
+  const [saveAlt, setSaveAlt] = useState("");
+  const [saveCaption, setSaveCaption] = useState("");
+
   async function handleBuildBrief(e: React.FormEvent) {
     e.preventDefault();
     setBuildPending(true);
@@ -148,6 +161,7 @@ export default function CreativeStudioView({ referenceAssets, portfolioOptions, 
         quality,
         referenceMediaAssetIds: brief.referenceMediaAssetIds,
       }));
+      setViaVariation(false);
       setStep("review");
     }
   }
@@ -161,14 +175,22 @@ export default function CreativeStudioView({ referenceAssets, portfolioOptions, 
     if (result && "success" in result) {
       setSaveState(null);
       setDiscardState(null);
+      setSaveFilename("");
+      setSaveAlt(fields.objective);
+      setSaveCaption("");
       setStep("preview");
     }
   }
 
-  async function handleSave() {
+  async function handleSave(e: React.FormEvent) {
+    e.preventDefault();
     if (!generateState || !("success" in generateState)) return;
     setSavePending(true);
-    const result = await saveToMediaLibraryAction(generateState.jobId, null, new FormData());
+    const formData = new FormData();
+    formData.set("filename", saveFilename);
+    formData.set("alt", saveAlt);
+    formData.set("caption", saveCaption);
+    const result = await saveToMediaLibraryAction(generateState.jobId, null, formData);
     setSavePending(false);
     setSaveState(result);
   }
@@ -192,12 +214,28 @@ export default function CreativeStudioView({ referenceAssets, portfolioOptions, 
     });
   }
 
+  function removeReferenceAsset(id: string) {
+    setFields((prev) => ({ ...prev, referenceMediaAssetIds: prev.referenceMediaAssetIds.filter((existing) => existing !== id) }));
+  }
+
+  function moveReferenceAsset(id: string, direction: -1 | 1) {
+    setFields((prev) => {
+      const index = prev.referenceMediaAssetIds.indexOf(id);
+      const targetIndex = index + direction;
+      if (index === -1 || targetIndex < 0 || targetIndex >= prev.referenceMediaAssetIds.length) return prev;
+      const next = [...prev.referenceMediaAssetIds];
+      [next[index], next[targetIndex]] = [next[targetIndex], next[index]];
+      return { ...prev, referenceMediaAssetIds: next };
+    });
+  }
+
   function startOver() {
     setFields(INITIAL_FIELDS);
     setBuildState(null);
     setGenerateState(null);
     setSaveState(null);
     setDiscardState(null);
+    setViaVariation(false);
     setStep("idea");
   }
 
@@ -212,7 +250,6 @@ export default function CreativeStudioView({ referenceAssets, portfolioOptions, 
 
   return (
     <div>
-      <h1 className="admin-page-heading">Big Red Creative Studio</h1>
       <p className="admin-form-section-help">
         Structure an idea, review the brief, then explicitly generate an image. Nothing is sent to an AI image
         provider until you click &quot;Generate Image&quot; on the reviewed brief — building a brief never calls an
@@ -277,6 +314,53 @@ export default function CreativeStudioView({ referenceAssets, portfolioOptions, 
 
           <div className="admin-form-section">
             <h2>3. Reference images (optional, up to {MAX_REFERENCE_MEDIA_ASSETS})</h2>
+            <p className="admin-form-section-help">
+              Only your active Media Library images can be chosen here — archived images never appear as an option
+              for a new generation.
+            </p>
+
+            {fields.referenceMediaAssetIds.length > 0 && (
+              <div>
+                <p className="admin-form-label-standalone">Selected ({fields.referenceMediaAssetIds.length}/{MAX_REFERENCE_MEDIA_ASSETS})</p>
+                <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 12 }}>
+                  {fields.referenceMediaAssetIds.map((id, index) => {
+                    const asset = referenceAssets.find((a) => a.id === id);
+                    if (!asset) return null;
+                    return (
+                      <div key={id} style={{ textAlign: "center" }}>
+                        <div className="admin-media-picker-thumb" style={{ width: 80, height: 80 }}>
+                          <Image src={asset.url} alt={asset.alt} fill sizes="80px" />
+                        </div>
+                        <div style={{ display: "flex", gap: 4, justifyContent: "center", marginTop: 4 }}>
+                          <button
+                            type="button"
+                            className="admin-secondary-button"
+                            onClick={() => moveReferenceAsset(id, -1)}
+                            disabled={index === 0}
+                            aria-label="Move earlier"
+                          >
+                            ↑
+                          </button>
+                          <button
+                            type="button"
+                            className="admin-secondary-button"
+                            onClick={() => moveReferenceAsset(id, 1)}
+                            disabled={index === fields.referenceMediaAssetIds.length - 1}
+                            aria-label="Move later"
+                          >
+                            ↓
+                          </button>
+                          <button type="button" className="admin-remove-button" onClick={() => removeReferenceAsset(id)}>
+                            ×
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
             {referenceAssets.length === 0 ? (
               <p className="admin-empty-state">No active images in your Media Library yet.</p>
             ) : (
@@ -441,6 +525,13 @@ export default function CreativeStudioView({ referenceAssets, portfolioOptions, 
             <p className="admin-form-section-help">
               You can still edit anything above — go back to make changes, or generate the image as reviewed.
             </p>
+            {viaVariation && (
+              <p className="admin-form-errors" role="status">
+                This will create a NEW, separate image and will spend approximately{" "}
+                <strong>{formatMicrosAsUsd(buildState.estimatedCostMicros)}</strong> on your OpenAI account. Your
+                current generation is not affected and stays exactly as it is either way.
+              </p>
+            )}
           </div>
 
           <form onSubmit={handleGenerateImage} className="admin-form">
@@ -490,17 +581,63 @@ export default function CreativeStudioView({ referenceAssets, portfolioOptions, 
           {discardState && "success" in discardState && <p className="admin-inline-success">Discarded — this generation is no longer part of the active workflow.</p>}
 
           {!((saveState && "success" in saveState) || (discardState && "success" in discardState)) && (
-            <div className="admin-form-actions">
-              <button type="button" className="admin-secondary-button" onClick={() => setStep("review")}>
-                Generate Another Variation
-              </button>
-              <button type="button" className="admin-remove-button" onClick={handleDiscard} disabled={discardPending}>
-                {discardPending ? "Discarding…" : "Discard"}
-              </button>
-              <button type="button" className="admin-signout-button" onClick={handleSave} disabled={savePending}>
-                {savePending ? "Saving…" : "Save to Media Library"}
-              </button>
-            </div>
+              <form onSubmit={handleSave} className="admin-form">
+                <h3>Save details</h3>
+                <div className="admin-form-row">
+                  <label>
+                    Filename
+                    <span className="admin-form-optional"> (optional — leave blank for the default)</span>
+                    <input
+                      type="text"
+                      value={saveFilename}
+                      onChange={(e) => setSaveFilename(e.target.value)}
+                      placeholder="big-red-creative-productions-branding-visual"
+                    />
+                  </label>
+                </div>
+                <div className="admin-form-row">
+                  <label>
+                    Alt text
+                    <input type="text" value={saveAlt} onChange={(e) => setSaveAlt(e.target.value)} />
+                  </label>
+                </div>
+                <div className="admin-form-row">
+                  <label>
+                    Caption
+                    <span className="admin-form-optional"> (optional)</span>
+                    <input type="text" value={saveCaption} onChange={(e) => setSaveCaption(e.target.value)} />
+                  </label>
+                </div>
+
+                {saveState && "errors" in saveState && saveState.errors.length > 0 && (
+                  <div className="admin-form-errors" role="alert" aria-live="assertive">
+                    <ul>
+                      {saveState.errors.map((error) => (
+                        <li key={error}>{error}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                <div className="admin-form-actions">
+                  <button
+                    type="button"
+                    className="admin-secondary-button"
+                    onClick={() => {
+                      setViaVariation(true);
+                      setStep("review");
+                    }}
+                  >
+                    Generate Another Variation
+                  </button>
+                  <button type="button" className="admin-remove-button" onClick={handleDiscard} disabled={discardPending}>
+                    {discardPending ? "Discarding…" : "Discard"}
+                  </button>
+                  <button type="submit" className="admin-signout-button" disabled={savePending}>
+                    {savePending ? "Saving…" : "Save to Media Library"}
+                  </button>
+                </div>
+              </form>
           )}
 
           {((saveState && "success" in saveState) || (discardState && "success" in discardState)) && (

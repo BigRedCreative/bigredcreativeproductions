@@ -4,30 +4,36 @@ import { getDb } from "@/db";
 import { aiGenerationJobs, mediaAssets } from "@/db/schema";
 import { recordAuditEvent } from "@/server/audit-log";
 import { getGenerationJobById } from "@/server/queries/creative-studio";
+import { sanitizeFilename, extensionFromStorageKey, mimeTypeFromExtension } from "@/server/sanitize-filename";
+import { sanitizeForStorage, truncateAtWordBoundary } from "@/server/brain/safe-summary";
+import { MAX_SAVE_ALT_LENGTH, MAX_SAVE_CAPTION_LENGTH } from "@/data/creative-studio";
 
-// Phase 20C-1 — "Save to Media Library" and "Discard," the two explicit
-// owner actions that end an unsaved generation's review. Both kept free of
-// any "use server"/requireAdminUser()/next/navigation dependency (unlike
-// mutate-creative-studio.ts, the real Server Action boundary that calls
-// these) so they're directly exercisable by the automated regression
-// suite.
+// Phase 20C-1/20C-2 — "Save to Media Library," "Discard," and "Restore,"
+// the three explicit owner actions that manage an unsaved generation's
+// review lifecycle. All kept free of any "use server"/requireAdminUser()/
+// next/navigation dependency (unlike mutate-creative-studio.ts, the real
+// Server Action boundary that calls these) so they're directly exercisable
+// by the automated regression suite.
 
 export type SaveToMediaResult = { errors: string[] } | { success: true; mediaAssetId: string };
 
-// A generation's storage key always ends in one of exactly these three
-// extensions — buildStorageKey() (src/server/media-storage.ts) is the ONLY
-// place that ever generates one, and it only ever uses these three. No new
-// column was added to store mime type separately; deriving it from the
-// key we ourselves generated is exact and avoids a schema change for a
-// fact we already know.
-function mimeTypeFromStorageKey(storageKey: string): string {
-  if (storageKey.endsWith(".png")) return "image/png";
-  if (storageKey.endsWith(".jpg")) return "image/jpeg";
-  if (storageKey.endsWith(".webp")) return "image/webp";
-  return "image/png";
-}
+// Phase 20C-2 — optional owner-authored overrides, reviewed just before
+// Save. All three are sanitized/bounded here, server-side, regardless of
+// what the client claims to have already validated. Blank/omitted fields
+// fall back to today's existing defaults (auto-generated filename, the
+// brief's own objective as alt, no caption) — none of the three is
+// required.
+export type SaveMetadataInput = {
+  filename?: string;
+  alt?: string;
+  caption?: string;
+};
 
-export async function handleSaveToMediaLibrary(adminUserId: string, jobId: string): Promise<SaveToMediaResult> {
+export async function handleSaveToMediaLibrary(
+  adminUserId: string,
+  jobId: string,
+  metadata: SaveMetadataInput = {},
+): Promise<SaveToMediaResult> {
   const job = await getGenerationJobById(jobId);
   if (!job) {
     return { errors: ["That generation could not be found."] };
@@ -56,12 +62,32 @@ export async function handleSaveToMediaLibrary(adminUserId: string, jobId: strin
       }
 
       const newAssetId = `media_${crypto.randomUUID()}`;
-      const mimeType = mimeTypeFromStorageKey(freshRow.outputStorageKey);
+      const extension = extensionFromStorageKey(freshRow.outputStorageKey);
+      const mimeType = mimeTypeFromExtension(extension);
+
+      // The extension is ALWAYS the server-derived one above — a filename
+      // typed by the owner can only ever influence the base name, never
+      // the extension, never the storageKey, never the url. See
+      // sanitize-filename.ts's own comment on why path traversal and
+      // extension-spoofing are structurally impossible here, not just
+      // checked for.
+      const requestedFilename = metadata.filename ? sanitizeFilename(metadata.filename, freshRow.outputStorageKey) : "";
+      const filename = requestedFilename || `ai-generated-${newAssetId}`;
+
+      const requestedAlt = metadata.alt !== undefined ? truncateAtWordBoundary(sanitizeForStorage(metadata.alt), MAX_SAVE_ALT_LENGTH) : "";
+      // A helpful default from the reviewed brief's own objective (already
+      // sanitized/bounded at brief-build time) when the owner didn't type
+      // their own alt text.
+      const alt = requestedAlt || job.brief.objective;
+
+      const requestedCaption = metadata.caption ? truncateAtWordBoundary(sanitizeForStorage(metadata.caption), MAX_SAVE_CAPTION_LENGTH) : "";
+      const caption = requestedCaption || null;
 
       // Reuses the ALREADY-uploaded, already byte-validated Blob object —
-      // no re-generation, no duplicate upload. This is the same permanent
-      // storageKey/url the generation step wrote; Save only ever adds a
-      // media_assets row pointing at it, exactly as approved.
+      // no re-generation, no duplicate upload, no rename/move of the Blob
+      // itself. This is the same permanent storageKey/url the generation
+      // step wrote; Save only ever adds a media_assets row pointing at it,
+      // with filename/alt/caption as pure display metadata.
       await tx.insert(mediaAssets).values({
         id: newAssetId,
         storageProvider: "vercel-blob",
@@ -69,16 +95,13 @@ export async function handleSaveToMediaLibrary(adminUserId: string, jobId: strin
         url: freshRow.outputUrl,
         type: "image",
         mimeType,
-        filename: `ai-generated-${newAssetId}`,
-        originalFilename: `ai-generated-${newAssetId}`,
+        filename,
+        originalFilename: filename,
         width: freshRow.outputWidth,
         height: freshRow.outputHeight,
         sizeBytes: freshRow.outputSizeBytes ?? 0,
-        // A helpful starting point from the reviewed brief's own
-        // objective (already sanitized/bounded at brief-build time) — the
-        // owner can edit it normally afterward via the existing
-        // MediaEditForm, exactly like any other asset.
-        alt: job.brief.objective,
+        alt,
+        caption,
         status: "active",
         createdByAdminUserId: adminUserId,
       });
@@ -135,6 +158,44 @@ export async function handleDiscardGeneration(adminUserId: string, jobId: string
     await recordAuditEvent(tx, {
       adminUserId,
       action: "creative.discarded",
+      entityType: "ai_generation_job",
+      entityId: jobId,
+      metadata: {},
+    });
+  });
+
+  return { success: true };
+}
+
+export type RestoreResult = { errors: string[] } | { success: true };
+
+// Phase 20C-2 — explicitly closes the gap Phase 20C-1 documented up front:
+// "if a discarded generation is later recoverable, recovery must be
+// explicit." Only ever moves discardedAt back to null — never touches
+// outputStorageKey/outputUrl (nothing was ever deleted, so there is
+// nothing to restore at the storage layer) and never calls a provider.
+// Structurally mirrors Discard's own guard in reverse: a SAVED job can
+// never be "restored" (the concept doesn't apply — it isn't discarded),
+// and a job that was never discarded in the first place is rejected too,
+// so this can't be used as a backdoor status-touch on an active job.
+export async function handleRestoreGeneration(adminUserId: string, jobId: string): Promise<RestoreResult> {
+  const job = await getGenerationJobById(jobId);
+  if (!job) {
+    return { errors: ["That generation could not be found."] };
+  }
+  if (job.outputMediaAssetId) {
+    return { errors: ["This generation has already been saved to your Media Library."] };
+  }
+  if (!job.discardedAt) {
+    return { errors: ["This generation was not discarded."] };
+  }
+
+  const db = getDb();
+  await db.transaction(async (tx) => {
+    await tx.update(aiGenerationJobs).set({ discardedAt: null }).where(eq(aiGenerationJobs.id, jobId));
+    await recordAuditEvent(tx, {
+      adminUserId,
+      action: "creative.restored",
       entityType: "ai_generation_job",
       entityId: jobId,
       metadata: {},
