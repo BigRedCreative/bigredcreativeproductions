@@ -51,13 +51,83 @@ export function isValidOrderStatusTransition(from: OrderStatus, to: OrderStatus)
 }
 
 // Payment status — a fully independent axis from work status (see
-// orders.paymentStatus in src/db/schema.ts). Tracking only: no Stripe, no
-// processor, no charge/refund API. "refunded" is terminal.
-export const PAYMENT_STATUSES = ["unpaid", "deposit-paid", "paid-in-full", "refunded"] as const;
+// orders.paymentStatus in src/db/schema.ts).
+//
+// Phase 21C-2A — widened, additively, to support a future Stripe-linked
+// payment path alongside the existing manual/off-platform one. Nothing
+// existing was removed or renamed: "unpaid"/"deposit-paid"/"paid-in-full"/
+// "refunded" keep their exact original meaning and remain the values used
+// by manual/off-platform orders (admin-recorded phone/check/etc. payments,
+// unchanged since Phase 18B) — confirmed by inspection to still be read
+// by src/server/brain/context-builder.ts, the admin dashboard
+// (src/app/admin/(protected)/page.tsx), and OrdersFilterBar.tsx, all of
+// which check these exact literal strings and required zero changes here.
+//
+// "pending"/"paid"/"failed"/"canceled" are new: the future Stripe-linked
+// path's own values. "paid" is deliberately a NEW, separate value from
+// "paid-in-full" — not a rename — so a fully-paid manual order and a
+// fully-paid Stripe order stay textually distinguishable at a glance
+// (and so no existing code checking for "paid-in-full" needs to also
+// learn about "paid"). See CLAUDE.md's Phase 21C-2A writeup, "Manual vs.
+// Stripe-linked payment status values," for the full compatibility
+// findings and the "stripePaymentIntentId is the discriminator" design.
+//
+// "canceled" (US spelling) is used here deliberately, distinct from
+// orders.status's own "cancelled" (UK spelling, the pre-existing WORK
+// status value) — this is a real, easy-to-miss inconsistency between two
+// independent enums, not a typo introduced by this phase; flagged
+// explicitly rather than silently normalized, since fixing orders.status's
+// spelling is a separate, unrelated concern well outside 21C-2A's scope.
+export const PAYMENT_STATUSES = [
+  "unpaid",
+  "pending",
+  "paid",
+  "failed",
+  "canceled",
+  "deposit-paid",
+  "paid-in-full",
+  "refunded",
+] as const;
 export type PaymentStatus = (typeof PAYMENT_STATUSES)[number];
 
+// Two overlapping sub-vocabularies live in one flat table, on purpose —
+// PAYMENT_STATUSES/PaymentStatus stay a single type so every existing
+// caller (OrderPaymentStatusForm, setOrderPaymentStatusAction,
+// getPaymentStatusCounts, etc.) keeps working unmodified. Every EXISTING
+// manual transition below is byte-for-byte unchanged from before this
+// phase. The new Stripe-linked transitions are additive.
+//
+// Phase 21C-2A semantic rule (see CLAUDE.md): order creation alone does
+// NOT mean "pending" — no code in this phase ever performs the
+// unpaid -> pending transition. It exists here now only so a FUTURE,
+// separately-approved PaymentIntent-creation step (21C-2B) has a real,
+// already-reviewed transition to call isValidPaymentStatusTransition()
+// against, once it actually exists. "paid" has no outgoing transition
+// yet — refund transitions for Stripe-linked orders are explicitly
+// deferred to Phase 21C-2F, not added here.
+//
+// KNOWN, DOCUMENTED GAP (not fixed this phase, flagged for 21C-2D): today,
+// OrderPaymentStatusForm renders every value in
+// PAYMENT_STATUS_TRANSITIONS[currentStatus] as an admin-clickable option,
+// with no awareness of whether an order is Stripe-linked
+// (stripePaymentIntentId set) or manual. This is harmless right now —
+// no code anywhere in the app can set stripePaymentIntentId yet (that
+// first happens in Phase 21C-2B), so no real order can currently be
+// Stripe-linked. Before any real Stripe-linked order can exist, 21C-2D
+// MUST add a stripePaymentIntentId-aware restriction so an admin can
+// never manually pick "pending"/"paid"/"failed"/"canceled" for a
+// Stripe-linked order (or "deposit-paid"/"paid-in-full" in contradiction
+// to what Stripe reports) — see CLAUDE.md Part F's write-up for the full
+// reasoning.
 export const PAYMENT_STATUS_TRANSITIONS: Record<PaymentStatus, readonly PaymentStatus[]> = {
-  unpaid: ["deposit-paid", "paid-in-full"],
+  // Existing manual transitions — unchanged. "pending" added as the one
+  // new addition, for a future Stripe-initiated PaymentIntent creation.
+  unpaid: ["pending", "deposit-paid", "paid-in-full"],
+  pending: ["paid", "failed", "canceled"],
+  paid: [],
+  failed: ["pending"],
+  canceled: [],
+  // Existing manual transitions — byte-for-byte unchanged.
   "deposit-paid": ["paid-in-full", "refunded"],
   "paid-in-full": ["refunded"],
   refunded: [],

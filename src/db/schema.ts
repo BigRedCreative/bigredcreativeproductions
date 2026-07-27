@@ -237,14 +237,90 @@ export const orders = pgTable(
     // for that.
     source: text("source").notNull().default("checkout"),
     clientRequestId: text("client_request_id").notNull(),
+    // Phase 21C-2A — payment infrastructure only, added ahead of any real
+    // Stripe integration (see CLAUDE.md "Payment Schema + Provider
+    // Abstraction (Phase 21C-2A)"). All four columns are nullable and
+    // additive; every existing row (including the one real order,
+    // BRCP-1013) is unaffected and simply reads NULL for all four. Nothing
+    // in this phase writes to any of them — no PaymentIntent has ever been
+    // created, no webhook exists yet.
+    //
+    // stripePaymentIntentId is the ONE identifier linking an order to a
+    // future Stripe PaymentIntent, and doubles as the discriminator
+    // between a manual/off-platform order (this stays NULL forever) and a
+    // future Stripe-linked one (this gets set exactly once, by a future,
+    // separately-approved PaymentIntent-creation step — Phase 21C-2B) —
+    // see "Manual vs. Stripe-linked payment handling" below for why no
+    // separate column was needed to distinguish the two.
+    stripePaymentIntentId: text("stripe_payment_intent_id"),
+    // Informational only — the raw last-known Stripe PaymentIntent.status
+    // string (e.g. "requires_action", "succeeded"), for future debugging/
+    // support visibility. Business logic must NEVER branch on this column
+    // — orders.paymentStatus (the existing, already-transition-guarded
+    // column above) remains the one authoritative business-state field,
+    // exactly like orders.status vs. paymentStatus already stay
+    // independent axes today.
+    stripePaymentStatus: text("stripe_payment_status"),
+    // Set exactly once, by a future verified Stripe webhook, the moment a
+    // Stripe-linked order's payment succeeds. Never set by anything else —
+    // not checkout, not an admin action, not a frontend redirect.
+    paidAt: timestamp("paid_at", { withTimezone: true }),
+    // Reflects the MOST RECENT failed payment attempt only (a future
+    // webhook clears this back to null on a subsequent success), not a
+    // history — full history already belongs in audit_log, matching this
+    // schema's standing "don't duplicate history a different table
+    // already owns" convention.
+    paymentFailedAt: timestamp("payment_failed_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
     uniqueIndex("orders_order_number_unique").on(table.orderNumber),
     uniqueIndex("orders_client_request_id_unique").on(table.clientRequestId),
+    // Partial-in-spirit but implemented as a plain unique index over a
+    // nullable column — Postgres treats multiple NULLs as distinct for
+    // unique-index purposes (NULLs never conflict with each other), so
+    // this correctly allows unlimited manual/off-platform orders (which
+    // stay NULL forever) while still guaranteeing at most one order per
+    // real Stripe PaymentIntent once that column is ever populated.
+    uniqueIndex("orders_stripe_payment_intent_id_unique").on(table.stripePaymentIntentId),
   ],
 );
+
+// ---------------------------------------------------------------------
+// Stripe webhook events — Phase 21C-2A, added ahead of any real webhook
+// endpoint (see CLAUDE.md "Payment Schema + Provider Abstraction (Phase
+// 21C-2A)"). Exists solely so a FUTURE, signature-verified webhook
+// handler (Phase 21C-2D) has a real, race-safe idempotency mechanism to
+// insert into on day one — Stripe's own docs explicitly warn that a
+// webhook event can be delivered more than once, and this codebase's
+// standing idempotency discipline (a real DB unique constraint as the
+// final authority, not just an application-level check — see
+// orders_client_request_id_unique) should extend here rather than being
+// weakened for this one integration.
+//
+// `id` IS the Stripe event's own "evt_..." id, stored verbatim as the
+// primary key — this is deliberately the ONE mechanism needed for
+// deduplication (a future handler's first statement is
+// `INSERT ... ON CONFLICT (id) DO NOTHING`; zero rows affected means
+// "already processed, no-op"). No separate uuid, no secondary unique
+// index — a primary-key lookup already covers the only query this table
+// will ever need to serve. No raw webhook body, no JSON Stripe object, no
+// webhook signature, no customer PII, no payment method data, and no
+// credential of any kind is ever stored here — only an id, a type string
+// (for debugging/observability only), which order it affected, and when
+// it was processed.
+// ---------------------------------------------------------------------
+export const stripeWebhookEvents = pgTable("stripe_webhook_events", {
+  id: text("id").primaryKey(),
+  // e.g. "payment_intent.succeeded" — free text, not a closed enum: a
+  // Stripe event type is Stripe's own, externally-versioned vocabulary,
+  // not one this app should hardcode/enumerate and risk falling out of
+  // sync with.
+  type: text("type").notNull(),
+  relatedOrderId: uuid("related_order_id").references(() => orders.id, { onDelete: "set null" }),
+  processedAt: timestamp("processed_at", { withTimezone: true }).notNull().defaultNow(),
+});
 
 // ---------------------------------------------------------------------
 // Order lines — frozen historical snapshots. selectedPackage/

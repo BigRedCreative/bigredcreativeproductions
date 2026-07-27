@@ -3119,6 +3119,176 @@ A full read-only pass across every other table, captured before this fix session
 
 Per the approved scope: no Stripe, no payment provider, no webhooks. No change to `orders.paymentStatus` or either status transition table. No inventory system. No `pricingSummary` JSONB-to-typed-columns migration. The idempotency *architecture* itself (client-generated `clientRequestId` plus a real DB unique constraint as the final authority) was not changed — only the two race-recovery code paths that sit on top of it. Vercel Firewall was deliberately **not** configured this phase either — the earlier architecture inspection found its available dashboard controls didn't provide the path-targeting/machine-readable-429 behavior this phase needed, so the existing Postgres-backed application-level limiter was extended instead; Vercel Firewall remains documented as optional future defense-in-depth if its feature set changes. No refactor of the existing Brain/Creative Studio/video-upload-token rate-limit callers to match this route's new 503-fail-closed pattern (approved for this route specifically, not retroactively).
 
+## Payment Schema + Provider Abstraction (Phase 21C-2A)
+
+**Status: complete — infrastructure only, migration applied and fully verified against real Neon. Schema and a provider interface, nothing else. No Stripe package installed, no Stripe API request ever made, no PaymentIntent created, no webhook endpoint, no frontend/checkout change, no CSP change, no refund, no deposit redesign, and no real or test-mode money movement of any kind.** This is the first of six approved Phase 21C-2 sub-gates (21C-2A–F, see Roadmap) — each requires its own separate approval before starting; approval of 21C-2A is not approval of 21C-2B, and this phase's completion does not imply any later sub-phase is approved to begin.
+
+### Payment authority model — the chain of trust this entire future integration must preserve
+
+```
+Product configuration (src/data/products.ts / the products table)
+  → authoritative PRODUCT pricing
+
+Server-created order + order_lines (src/server/create-order.ts, unchanged since Phase 21C-1)
+  → authoritative FROZEN order amount — computed server-side, never client-submitted
+
+Future PaymentIntent (Phase 21C-2B, not built yet)
+  → its amount MUST be derived from the persisted, server-owned order total above —
+    never from anything a browser sends
+
+Stripe (once integrated)
+  → future authority for whether money actually moved — this app will never assert
+    payment success on its own say-so
+
+orders.paymentStatus (this table, today)
+  → this application's own business-state field — the one place code branches on
+    "is this order paid," independent of whatever Stripe's own raw status says
+
+Browser
+  → NEVER authoritative for price, amount, payment success, refund success, or
+    paymentStatus — no exception, now or in any future sub-phase
+```
+
+Two rules that follow directly from this chain, stated explicitly because they are the load-bearing safety property of the entire future payment feature: **a Stripe-linked order must remain `unpaid` until a future PaymentIntent has been successfully created *and* its identifier has been safely persisted** — the `unpaid → pending` transition may only ever be performed by that future, successful operation, never by order creation alone and never by a client request. And **a Stripe-linked order may become `paid` only from a future, signature-verified Stripe webhook** — never a frontend callback, a redirect query parameter, a `clientSecret` result, a browser success message, or an admin dropdown.
+
+### Payment status — additively widened, nothing removed or renamed
+
+Before changing anything, every existing usage of `PAYMENT_STATUSES`/`paymentStatus`/`isValidPaymentStatusTransition` was inspected directly: `src/server/brain/context-builder.ts` (Big Red Brain's order-context payment counts), `src/app/admin/(protected)/page.tsx` (the dashboard's "Deposit paid" metric), `src/components/admin/OrdersFilterBar.tsx` (the orders filter dropdown), `src/server/queries/orders.ts` (`getPaymentStatusCounts()` — a real `GROUP BY` query returning a dynamic `Record<string, number>`, and `isValidPaymentStatus()` — a plain array-membership check), and `src/components/admin/OrderPaymentStatusForm.tsx`/`src/server/mutate-order.ts` (the admin manual-status-change form and its Server Action). None of these use an exhaustive `switch`, so **every one of them is unaffected by adding new values** — confirmed by direct inspection, not assumed.
+
+`PAYMENT_STATUSES` (`src/data/orders.ts`) widened from `["unpaid", "deposit-paid", "paid-in-full", "refunded"]` to:
+
+```ts
+["unpaid", "pending", "paid", "failed", "canceled", "deposit-paid", "paid-in-full", "refunded"]
+```
+
+**Nothing existing was removed, renamed, or reinterpreted.** `unpaid`/`deposit-paid`/`paid-in-full`/`refunded` keep their exact original meaning and remain the values used by manual/off-platform orders — unchanged since Phase 18B. `pending`/`paid`/`failed`/`canceled` are new: the future Stripe-linked path's own values. **`paid` is a deliberately separate, new value from `paid-in-full` — not a rename** — so a fully-paid manual order and a fully-paid Stripe order stay textually distinguishable, and no existing code checking for `"paid-in-full"` needs to also learn about `"paid"`. The one real order in production, `BRCP-1013`, has `paymentStatus: "unpaid"` — a value that remains valid unchanged; no real order currently uses `paid-in-full`/`refunded`, so there is no data-correction concern either way. The column itself is, and remains, plain `text` with no CHECK constraint (matching every other status column in this schema) — widening the allowed TypeScript values required **zero SQL migration**, the exact same precedent already established for Phase 18B's `ORDER_STATUSES` widening.
+
+**One honestly-flagged, real naming inconsistency, not introduced by this phase**: the new `"canceled"` (US spelling) sits alongside `orders.status`'s own pre-existing `"cancelled"` (UK spelling, the unrelated work-status value). This is a genuine, easy-to-miss quirk between two independent enums — noted explicitly here rather than silently normalized, since correcting `orders.status`'s spelling is a separate, unrelated concern well outside this phase's scope.
+
+### Transition table — additive, existing manual transitions byte-for-byte unchanged
+
+```ts
+export const PAYMENT_STATUS_TRANSITIONS: Record<PaymentStatus, readonly PaymentStatus[]> = {
+  unpaid: ["pending", "deposit-paid", "paid-in-full"],   // "pending" is the one addition
+  pending: ["paid", "failed", "canceled"],
+  paid: [],
+  failed: ["pending"],
+  canceled: [],
+  "deposit-paid": ["paid-in-full", "refunded"],       // unchanged
+  "paid-in-full": ["refunded"],                // unchanged
+  refunded: [],                        // unchanged
+};
+```
+
+Matches the accepted transition model exactly:
+
+```
+unpaid → pending | deposit-paid | paid-in-full
+pending → paid | failed | canceled
+failed → pending
+deposit-paid → paid-in-full | refunded
+paid-in-full → refunded
+paid / canceled / refunded → no outgoing transitions
+```
+
+**`paid` and `paid-in-full` were deliberately NOT collapsed into one value in this phase.** `paid` is reserved exclusively for the future Stripe-linked payment path; `paid-in-full` remains exactly its existing meaning for manual/off-platform compatibility. Both currently share the same "fully paid" business meaning from an outside observer's perspective, but keeping them textually distinct means no future Stripe-specific logic ever needs to also handle a manual-order code path (or vice versa) by accident, and no existing manual-order code needed to change at all to make room for Stripe. `paid` has no outgoing transition yet — refund transitions for Stripe-linked orders (`paid → partially_refunded`/`refunded`) are explicitly deferred to Phase 21C-2F, not added here, per instruction.
+
+**The core semantic rule, enforced by construction, not just documentation**: no code anywhere in this phase ever performs the `unpaid → pending` transition — it exists in the table now only so a *future*, separately-approved PaymentIntent-creation step (21C-2B) has an already-reviewed transition to call `isValidPaymentStatusTransition()` against once it actually exists. An order remains `unpaid` until a real PaymentIntent has been successfully created **and** its identifier safely persisted — order creation alone never implies `pending`, and a Stripe outage during PaymentIntent creation must never leave a fake `pending` order behind (a real risk this phase's design explicitly guards against for 21C-2B to inherit correctly).
+
+### Known, documented gap — not fixed this phase, flagged for 21C-2D
+
+`OrderPaymentStatusForm` currently renders **every** value in `PAYMENT_STATUS_TRANSITIONS[currentStatus]` as an admin-clickable option, with no awareness of whether an order is Stripe-linked. This is harmless *today* — no code anywhere in this codebase can set `stripePaymentIntentId` yet (that first happens in Phase 21C-2B), so no real order can currently be Stripe-linked, and the dropdown's new options are unreachable in practice. **Before any real Stripe-linked order can exist, Phase 21C-2D must add a `stripePaymentIntentId`-aware restriction** so an admin can never manually pick `pending`/`paid`/`failed`/`canceled` for a Stripe-linked order, or `deposit-paid`/`paid-in-full` in contradiction to what Stripe itself reports. Per explicit instruction, this UI restriction is not implemented now — documented here instead, since no tiny type/state change was actually required for correctness *in this phase specifically* (the gap only becomes live once 21C-2B exists).
+
+### Manual vs. Stripe-linked payment handling — no new discriminator column needed
+
+`orders.stripePaymentIntentId` (below) **is** the distinguishing signal between the two regimes — no separate column was added to distinguish them, per instruction to use the smallest solution that existing fields can support safely. A manual/off-platform order's `stripePaymentIntentId` stays `NULL` forever; a future Stripe-linked order gets it set exactly once, by the (not-yet-built) PaymentIntent-creation step. Combined with the payment-status vocabulary split above (manual orders use `deposit-paid`/`paid-in-full`; Stripe orders use `pending`/`paid`/`failed`/`canceled`), a future admin UI or webhook handler can always tell which regime an order belongs to from data already being added this phase — no new column was genuinely needed.
+
+### Schema additions — `orders` gains 4 nullable columns, zero impact on existing rows
+
+```ts
+stripePaymentIntentId: text("stripe_payment_intent_id"),     // nullable, unique index — the ONE PaymentIntent linked to this order
+stripePaymentStatus: text("stripe_payment_status"),        // nullable, informational only — NEVER authoritative
+paidAt: timestamp("paid_at", { withTimezone: true }),       // nullable — set once, by a future verified webhook
+paymentFailedAt: timestamp("payment_failed_at", { withTimezone: true }), // nullable — most-recent-attempt only, not history
+```
+
+**`refundedAmountCents` was deliberately NOT added this phase** — per instruction, refund fields belong to the later refund phase (21C-2F), once that architecture is separately approved. `stripePaymentStatus` is explicitly informational — business logic must never branch on it; `orders.paymentStatus` (the existing, transition-guarded column) remains the one authoritative business-state field, exactly mirroring how `orders.status` and `orders.paymentStatus` already stay independent axes today.
+
+The new unique index (`orders_stripe_payment_intent_id_unique`) is a plain unique index over a nullable column — Postgres treats multiple `NULL`s as distinct for unique-index purposes, so this correctly allows unlimited manual orders (which stay `NULL` forever) while still guaranteeing at most one order per real Stripe PaymentIntent once that column is ever populated. No partial-index `WHERE` clause was needed to achieve this — standard Postgres unique-index behavior already provides it.
+
+### `stripe_webhook_events` — the minimum table for future webhook idempotency
+
+```ts
+export const stripeWebhookEvents = pgTable("stripe_webhook_events", {
+  id: text("id").primaryKey(),        // the future Stripe event's own "evt_..." id, verbatim
+  type: text("type").notNull(),       // e.g. "payment_intent.succeeded" — debugging/observability only
+  relatedOrderId: uuid("related_order_id").references(() => orders.id, { onDelete: "set null" }),
+  processedAt: timestamp("processed_at", { withTimezone: true }).notNull().defaultNow(),
+});
+```
+
+`id` **is** the idempotency mechanism — a future webhook handler's first statement is `INSERT ... ON CONFLICT (id) DO NOTHING`; zero rows affected means "already processed, no-op," mirroring the exact race-safe pattern Phase 21C-1 just proved for `customers.email`/`orders.clientRequestId`. **No secondary index was added** — the primary key already covers the only query this table will ever need to serve (a lookup by event id), and adding one without a demonstrated query need would be exactly the kind of unjustified redundancy the approved scope asked to avoid. `relatedOrderId` uses `ON DELETE SET NULL` (never `CASCADE`), matching this schema's own standing convention that historical/audit-adjacent rows must never be deleted merely because the entity they reference changes or disappears. **No raw webhook body, no JSON Stripe object, no webhook signature, no customer PII, no payment method data, and no credential of any kind is stored here or anywhere in this phase.**
+
+### Payment provider abstraction — interface only, no implementation, no registry
+
+`src/server/payments/provider.ts` — deliberately narrower than `TextProvider`/`ImageProvider` (`src/server/brain/providers/text-provider.ts`, `src/server/creative-studio/providers/image-provider.ts`), which exist because Big Red Brain/Creative Studio needed a real provider-*selection* concept from day one. Payments do not: there is exactly one real-world target, no "which model" concept applies, and — per explicit instruction — **no registry file was created merely for symmetry**. A registry (`getConfiguredPaymentProvider()`-equivalent) is Phase 21C-2B's first deliverable, once a concrete implementation actually exists to select; creating one now would mean either a function with nothing real to return, or one that risks silently importing/constructing a real Stripe client ahead of approval — exactly what this phase's scope prohibits.
+
+```ts
+export type CreatePaymentIntentRequest = {
+  orderId: string;       // this app's own permanent order id — never client-chosen
+  amountCents: number;    // read from the order's own frozen total — never raw checkout/request-body input
+  currency: "usd";      // fixed, server-decided — never client-selectable
+  idempotencyKey: string;   // server-generated (e.g. from the order's own id) — never client-submitted
+};
+
+export type CreatePaymentIntentResult = {
+  provider: string;
+  providerPaymentIntentId: string;
+  clientSecret: string;    // must never be logged or written to audit_log — short-lived, effectively a bearer credential
+  status: string;
+};
+
+export interface PaymentProvider {
+  readonly providerName: string;
+  createPaymentIntent(request: CreatePaymentIntentRequest): Promise<CreatePaymentIntentResult>;
+}
+```
+
+Plus `PaymentProviderError` (a typed `Error` subclass carrying one of a small, closed `PaymentProviderErrorCategory` — `invalid_request` | `provider_unavailable` | `idempotency_conflict`), mirroring `TextProviderError`/`ImageProviderError`'s exact shape. This category vocabulary is explicitly a first-pass contract, not a finished taxonomy — a real implementation (21C-2B) may refine it once it's actually mapping a real SDK's error shapes onto it. **No concrete implementation exists.** Nothing in this codebase imports the `stripe` package (confirmed: not in `package.json`, not in `node_modules`), and nothing calls any method this interface describes.
+
+### A real, honest operational finding from this phase's own verification — since resolved
+
+Between generating the migration and applying it, applying the `schema.ts` change to the TypeScript definitions had an immediate, real side effect on this dev environment: any code path doing an unqualified `db.select()`/`db.query.orders.findFirst()` against `orders` generated SQL referencing the 4 new columns, which didn't exist in the live (not-yet-migrated) Neon database yet — confirmed directly: a plain Drizzle-query-builder read against `orders` returned a genuine `500` against the real running dev server during that window. This was expected, standard Drizzle workflow (a schema change and its migration are meant to be applied together, not left straddling) — not a defect — but meant this dev server's order-related admin/checkout pages were briefly non-functional. **Confirmed fully resolved after the migration was applied**: the exact same Drizzle query-builder functions the real admin pages use (`getOrderById()`, `listOrders()` from `src/server/queries/orders.ts`) were re-exercised directly and returned correct `200` results (`BRCP-1013` found, `paymentStatus: "unpaid"`, `listTotalCount: 1`) — not just a raw-SQL workaround, the actual application code path.
+
+### Migration — generated, reviewed, and applied
+
+`drizzle/0017_worthless_steel_serpent.sql` — one `CREATE TABLE` (`stripe_webhook_events`), four `ALTER TABLE ... ADD COLUMN` statements (all nullable, no default beyond what's declared above), one `ALTER TABLE ... ADD CONSTRAINT` (the `relatedOrderId` FK, `ON DELETE SET NULL`), one `CREATE UNIQUE INDEX`. No `DROP`, no destructive `ALTER`, no data-modifying statement of any kind, no hardcoded secret or default value. All 17 prior migration files (`0000`–`0016`) confirmed byte-identical via SHA-256 comparison before generation, again before applying, and a third time after applying. `drizzle/meta/_journal.json`'s diff confirmed strictly append-only (one new entry, nothing reordered or removed) at every check. `npm run db:migrate` applied successfully; `drizzle.__drizzle_migrations` confirms migration id `18` recorded with a `created_at` timestamp matching the journal's own `0017` entry exactly.
+
+### Acceptance history — what was genuinely verified against the real, live Neon database
+
+Using a temporary, read-only verification route (deleted immediately after each use, the same established pattern every prior phase in this codebase has used) against the real, running dev server and real Neon database:
+
+- Migration `0017` applied successfully with no errors.
+- All 4 new `orders` columns confirmed live with exact types (`text`, `text`, `timestamp with time zone`, `timestamp with time zone`), all nullable, no defaults.
+- A direct query across **every** existing order (not just BRCP-1013) confirmed **zero** rows have a non-null value in any of the 4 new columns.
+- `BRCP-1013` reconfirmed completely unchanged: same permanent id, same order number, `status: "approved"`, `paymentStatus: "unpaid"`, all 4 new fields `null`, same `customerId`/`createdAt`/`updatedAt`.
+- `orders_stripe_payment_intent_id_unique` confirmed as a real unique btree index on exactly `stripe_payment_intent_id`; the full index list on `orders` shows exactly 4 indexes total — no unexpected extra index was created.
+- `stripe_webhook_events`'s live schema confirmed to exactly match the design: `id` (text, PK), `type` (text, not null), `related_order_id` (uuid, nullable), `processed_at` (timestamptz, not null, default `now()`).
+- `stripe_webhook_events` row count confirmed **0**.
+- The FK (`stripe_webhook_events.related_order_id → orders.id`, `ON DELETE SET NULL`) confirmed exactly, with no CASCADE. A reverse-FK check (`orders` referencing `stripe_webhook_events`) confirmed empty. A trigger check on both tables confirmed empty. A function-name search for anything webhook/stripe/payment-related confirmed empty — no processing function exists anywhere in the database.
+- The provider abstraction (`src/server/payments/provider.ts`) reconfirmed to contain zero Stripe import, zero network call, zero `fetch`, zero SDK client, zero registry/instantiation of any real provider.
+- No Stripe dependency in `package.json`/`node_modules`; no Stripe environment variable anywhere in `.env.example` or the diff.
+- No `clientSecret` persistence anywhere — a live, whole-database `information_schema.columns` scan for card-number/CVC/CVV/PaymentMethod/Stripe-secret/webhook-secret/signature/raw-body/client-secret/payment-credential-shaped column names returned **zero matches**.
+- `audit_log` total confirmed unchanged (89, both before and after the migration) — the migration itself created **zero** application audit events, exactly as required.
+- `rate_limit_events` confirmed to still show only the one legitimate, pre-existing `brain_admin` row — no leftover test rows of any kind.
+- The complete real-data baseline (leads, notes, products, services, portfolio, media assets, Brain requests, Creative Studio jobs, Motion settings, Brand, Homepage Hero) reconfirmed byte-identical before and after.
+- The order-query 500 caused by the temporary pre-migration schema/migration mismatch (documented above) confirmed fully resolved after migration, via the real application query functions, not just raw SQL.
+- `npx tsc --noEmit`, `npm run lint`, and `npm run build` all confirmed clean, both before and after migration application.
+
+### What this phase deliberately did not add
+
+Per the approved scope: no `stripe`/`@stripe/stripe-js`/`@stripe/react-stripe-js` package (confirmed absent from `package.json` and `node_modules`). No `STRIPE_SECRET_KEY`/`STRIPE_WEBHOOK_SECRET`/publishable key of any kind (confirmed absent from `.env.example` and the full diff). No PaymentIntent ever created, no webhook endpoint, no `CheckoutView.tsx`/frontend/payment UI change, no CSP change (`next.config.ts` untouched). No refund fields/logic (`refundedAmountCents` deliberately deferred to 21C-2F). No Stripe deposit-collection redesign — `deposit-paid` remains exactly its existing manual-order meaning; whether Stripe deposits eventually need one PaymentIntent or two remains an explicitly open, separately-decided question for a later sub-phase. No real or test-mode money moved — no Stripe API request of any kind occurred anywhere in this phase.
+
 ## Roadmap
 
 **This section is the single, authoritative statement of the phase timeline from here forward.** It is documentation only — nothing described below as a future phase has been implemented, scheduled with a date, or approved for implementation merely by appearing here. Every phase-specific section elsewhere in this file (Video Media Foundation, Portfolio/Service Video Support, etc.) remains the authoritative record of what has **already shipped** and its own real acceptance-test history — this section does not rewrite or supersede any of that. When a future phase below actually starts, it gets its own dedicated section (following this file's established pattern) with real architecture decisions, real test results, and real acceptance history — the entries below are deliberately kept at planning-level detail, not implementation detail, until that happens.
@@ -3164,6 +3334,12 @@ Extends Phase 20C-1/20C-2's foundation to video: branding-presentation and logo-
 - **Phase 21A-2 — Security Headers & CSP — complete.** See "Security Headers & CSP (Phase 21A-2)" above — full header set, final CSP, HSTS/Permissions-Policy/COOP, resource-needs audit, real production browser verification, real manual acceptance.
 - **Phase 21B — Auth/Session + Origin/CSRF Hardening — complete.** See "Auth/Session + Origin/CSRF Hardening (Phase 21B)" above — a full architecture audit of the original "21A — Admin + Authentication" bullet's scope (session security/expiration, logout behavior, direct-request authorization-bypass attempts, CSRF, privilege escalation, IDOR) found the existing model already sound almost everywhere, and implemented only the smallest justified set the audit's evidence actually supported: an Origin/same-origin check scoped to the one Route Handler that needed it (`/api/media/video-upload-token`), an explicit 7-day session `maxAge` (replacing Auth.js's inherited 30-day default), and a documented emergency-revocation procedure. **Naming note**: this "Phase 21B" label refers to this specific auth/session/CSRF work, and is distinct from the original audit's own "21B — Store + Checkout + Orders" bullet immediately below (kept at its original letter so it stays consistent with every other original 21A–21K reference elsewhere in this file, including "the rate-limiting portion of 21H"). Don't conflate the two. Not addressed by this phase, and remaining open from the original 21A scope: MFA expectations for privileged accounts, a broader logout-behavior review, and a one-click admin deactivation UI (deliberately deferred, per approval).
 - **Phase 21C-1 — Store/Checkout Rate Limiting + `order.created` Audit — complete.** See "Store/Checkout/Order Security — Rate Limiting + `order.created` Audit (Phase 21C-1)" above — a full read-only 24-point audit of the original "21B — Store + Checkout + Orders" bullet found the checkout/order pipeline already fully server-authoritative for pricing with a real, race-safe idempotency guarantee and zero IDOR surface (zero Critical findings), and implemented only the two real gaps the audit's evidence actually supported: a new `order_creation_ip` rate-limit scope on `POST /api/orders` (5/5min burst, 10/hr, fail-closed `503` on limiter infrastructure failure), and the checkout path's first `order.created` audit event (the admin-manual-order path already had one). **Naming note**: same pattern as "Phase 21B" above — this label is distinct from the original audit's own "21B — Store + Checkout + Orders" bullet immediately below (kept at its original letter for cross-reference continuity). Genuine-concurrency testing then exposed and led to fixing two real reliability bugs, both documented in full above: a customer-email creation race (no recovery path for a concurrent insert conflict), and a deeper, shared `isUniqueViolation()` defect (never matched this Drizzle version's wrapped driver errors, so the pre-existing order-level `clientRequestId` race recovery had never actually been reachable) plus an unsafe same-transaction recovery pattern once it was. Both fixed using `INSERT ... ON CONFLICT DO NOTHING` + re-query, which never poisons the surrounding transaction — confirmed zero HTTP 500s across 5 independent full concurrency-test runs. Not addressed by this phase, and remaining open from the original 21B scope: Vercel Firewall's own public/IP-level configuration (still not applied, per its own documented dashboard-limitation finding), order-number-manipulation/manual-order-security/order-status-and-payment-status-manipulation adversarial testing.
+- **Phase 21C-2A — Payment schema/provider abstraction — complete.** See "Payment Schema + Provider Abstraction (Phase 21C-2A)" above — additively-widened `PaymentStatus`/transition table, 4 new nullable `orders` columns plus the new `stripe_webhook_events` idempotency table, and a `PaymentProvider` interface with zero concrete implementation. Migration `0017_worthless_steel_serpent.sql` generated, reviewed, applied, and fully verified against real Neon (see "Acceptance history" above). No Stripe package, no Stripe API request, no PaymentIntent, no webhook, no frontend/CSP change, and no money movement of any kind occurred in this sub-phase. **Completion of 21C-2A does not imply approval of any later 21C-2 sub-phase** — each of 21C-2B–F requires its own separate approval.
+- **Phase 21C-2B — PaymentIntent creation — not started.**
+- **Phase 21C-2C — Stripe Elements frontend — not started.**
+- **Phase 21C-2D — Signed webhook processing — not started.**
+- **Phase 21C-2E — Real Stripe test-mode acceptance — not started.**
+- **Phase 21C-2F — Refunds — not started.** Stripe deposit-payment architecture (one PaymentIntent vs. two for deposit-then-balance) remains separately unresolved/deferred, not decided by 21C-2A.
 - **Everything else in the original 21A–21K breakdown below** (the rest of 21A's original scope now tracked as Phase 21B above; the rest of 21B now tracked as Phase 21C-1 above; 21C–21G; the rest of 21H — Vercel Firewall's own dashboard configuration for public/IP-level surfaces, contact form, checkout, order creation, admin login; 21I–21K) — **not started.**
 - **Phase 20D — AI Video Generation — not started**, unrelated to Phase 21, requires its own separate architecture/security/cost review before starting (see its own Roadmap entry above).
 
