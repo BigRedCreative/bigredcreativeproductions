@@ -21,6 +21,8 @@ import { getCustomerById } from "@/server/queries/customers";
 import { getOrderById } from "@/server/queries/orders";
 import { getPortfolioEntityForAdmin } from "@/server/queries/portfolio";
 import { getServiceEntityForAdmin } from "@/server/queries/services";
+import { getPublishedBrandTokens } from "@/server/queries/brand";
+import { getSiteSettings } from "@/server/queries/site-content";
 import {
   truncateContextField,
   capContextList,
@@ -430,5 +432,35 @@ export async function buildMediaContext(mediaAssetId: string): Promise<EntityCon
       hasMissingAltText: !asset.alt || asset.alt.trim() === "",
       isArchived: asset.status === "archived",
     },
+  };
+}
+
+// --- Brand ------------------------------------------------------------------
+// Phase 20C-1 — Creative Studio's "Brand" context source. Deliberately
+// uses ONLY real, existing, admin-editable Brand configuration — the
+// published site name and the published brand_settings colors — never a
+// hardcoded "brand voice" string derived from CLAUDE.md or any other
+// documentation file (CLAUDE.md is documentation, not production
+// configuration, per explicit approval). brand_settings has no editable
+// "voice/tone" field today, so this context simply omits that concept
+// entirely rather than inventing one; a future phase could add a real,
+// admin-editable Brand Voice field to brand_settings and extend this
+// function then, without needing to revisit this decision.
+export type BrandContext = {
+  siteName: string;
+  primaryColor: string;
+  accentColor: string;
+  buttonBackground: string;
+  buttonText: string;
+};
+
+export async function buildBrandContext(): Promise<BrandContext> {
+  const [tokens, settings] = await Promise.all([getPublishedBrandTokens(), getSiteSettings()]);
+  return {
+    siteName: settings.siteName,
+    primaryColor: tokens.primaryColor,
+    accentColor: tokens.accentColor,
+    buttonBackground: tokens.buttonBackground,
+    buttonText: tokens.buttonText,
   };
 }

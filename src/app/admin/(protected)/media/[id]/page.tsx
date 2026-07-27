@@ -11,6 +11,7 @@ import {
   getActiveMediaAssetsForPicker,
   getMediaAssetsByIds,
 } from "@/server/queries/media";
+import { findGenerationByOutputMediaAssetId } from "@/server/queries/creative-studio";
 import { productHref } from "@/data/products";
 import { serviceHref } from "@/data/services";
 import { projectHref } from "@/data/projects";
@@ -50,7 +51,7 @@ export default async function AdminMediaDetailPage({ params }: MediaDetailPagePr
 
   const isVideo = asset.type === "video";
 
-  const [productRefs, serviceRefs, projectRefs, heroRefs, posterUsageRefs, posterPickerAssets, currentPosterMap] = await Promise.all([
+  const [productRefs, serviceRefs, projectRefs, heroRefs, posterUsageRefs, posterPickerAssets, currentPosterMap, generationProvenance] = await Promise.all([
     findProductsReferencingMediaAsset(id),
     findServicesReferencingMediaAsset(id),
     findProjectsReferencingMediaAsset(id),
@@ -58,6 +59,7 @@ export default async function AdminMediaDetailPage({ params }: MediaDetailPagePr
     asset.type === "image" ? findAssetsUsingAsPoster(id) : Promise.resolve([]),
     isVideo ? getActiveMediaAssetsForPicker(["image"]) : Promise.resolve([]),
     isVideo && asset.posterMediaAssetId ? getMediaAssetsByIds([asset.posterMediaAssetId]) : Promise.resolve(new Map()),
+    findGenerationByOutputMediaAssetId(id),
   ]);
   const totalUsageCount = productRefs.length + serviceRefs.length + projectRefs.length + heroRefs.length + posterUsageRefs.length;
   const currentPoster = asset.posterMediaAssetId ? (currentPosterMap.get(asset.posterMediaAssetId) ?? null) : null;
@@ -244,6 +246,27 @@ export default async function AdminMediaDetailPage({ params }: MediaDetailPagePr
               <span>{asset.id}</span>
             </div>
           </div>
+
+          {generationProvenance && (
+            <div className="admin-detail-block">
+              <h2>AI provenance</h2>
+              <p className="admin-form-section-help">Generated in Creative Studio.</p>
+              <div className="admin-detail-row">
+                <span className="admin-detail-label">Task</span>
+                <span>{generationProvenance.taskPreset.replace(/_/g, " ")}</span>
+              </div>
+              <div className="admin-detail-row">
+                <span className="admin-detail-label">Provider / model</span>
+                <span>
+                  {generationProvenance.provider} / {generationProvenance.model}
+                </span>
+              </div>
+              <div className="admin-detail-row">
+                <span className="admin-detail-label">Generation date</span>
+                <span>{generationProvenance.createdAt.toLocaleDateString("en-US")}</span>
+              </div>
+            </div>
+          )}
 
           <AskBrainForm requestSource="media_detail" relatedEntityType="media_asset" relatedEntityId={asset.id} presets={MEDIA_BRAIN_PRESETS} />
         </div>

@@ -27,6 +27,16 @@ import type {
   BrainRelatedEntityType,
   BrainUsageMetadata,
 } from "@/data/brain";
+import type {
+  CreativeTaskPreset,
+  CreativeContextSourceType,
+  CreativeBrief,
+  ImageGenerationSize,
+  ImageGenerationQuality,
+  ImageGenerationStatus,
+  ImageGenerationErrorCategory,
+  ImageGenerationUsageMetadata,
+} from "@/data/creative-studio";
 
 // Server-side persistence layer — see CLAUDE.md "Backend + database
 // foundation" for the full architecture writeup. This schema deliberately
@@ -1026,4 +1036,136 @@ export const brainRequests = pgTable(
 
 export const brainRequestsRelations = relations(brainRequests, ({ one }) => ({
   requestedByAdminUser: one(adminUsers, { fields: [brainRequests.requestedByAdminUserId], references: [adminUsers.id] }),
+}));
+
+// ---------------------------------------------------------------------
+// Phase 20C-1 — AI Creative Studio foundation (image generation). A
+// SEPARATE table from brain_requests, never a shared/extended one — Big
+// Red Brain (text) and the image ImageProvider are deliberately
+// independent provider capabilities, per approval. This table is the
+// image-generation counterpart, not an extension of brain_requests.
+//
+// Same strict READ + RECOMMEND + GENERATE-PREVIEW boundary as Brain: this
+// table grants no write access to any other business/content table. A
+// generation only becomes a real, usable asset via a SEPARATE, explicit
+// "Save to Media Library" action (not yet built this phase) that inserts
+// a normal media_assets row and sets outputMediaAssetId here — nothing
+// about this table's presence ever auto-attaches anything to
+// Homepage/Portfolio/Service/Product/any other business record.
+//
+// `id` uses the "aigen_" + crypto.randomUUID() text-id convention
+// (matching media_assets/services/portfolio_projects' "permanent content
+// entity" family) rather than a plain uuid — once saved, a generation job
+// is permanently, meaningfully referenced by a real media_assets row and
+// by admin provenance views the same way those entities are.
+//
+// `status` is closed to 'completed' | 'failed', mirroring
+// brain_requests.status exactly. OpenAI's Images API is synchronous — one
+// blocking HTTP request, no polling, no webhook — so there is no
+// 'queued'/'running' state this system will ever actually observe.
+// 'saved' is deliberately NOT a status value either: it's a derived fact
+// (outputMediaAssetId IS NOT NULL), kept structurally independent of
+// `status` so "did the provider succeed" and "did the owner decide to
+// keep it" can never collide into one enum or fall out of sync.
+//
+// `discardedAt` (nullable, orthogonal to status/outputMediaAssetId — same
+// "orthogonal timestamp, not a status value" pattern leads.archivedAt
+// already established) is the smallest mechanism for "the owner is done
+// reviewing this, hide it from the active Studio workflow" WITHOUT
+// deleting the underlying Blob object or this row — recoverability during
+// early Creative Studio use, per approval. Discarding never touches
+// outputStorageKey/outputUrl; the generated file stays fully intact in
+// Blob storage and this row remains a complete, permanent history record.
+// No automated retention-cleanup scheduler exists yet — documented as a
+// deferred future maintenance/security task, not built this phase.
+//
+// A generated image is NEVER inserted into media_assets, and therefore
+// NEVER appears in any Media Library picker, until the separate Save
+// action runs — this table has no relationship to picker queries at all,
+// discarded or not.
+//
+// `referenceMediaAssetIds`/`contextSourceId` are both application-level
+// only (no FK): referenceMediaAssetIds is a JSONB array of ids (a single
+// scalar FK can't span it, and each id is independently re-verified
+// against media_assets at generation time, never trusted as already
+// valid); contextSourceId is polymorphic across
+// brand_settings/portfolio_projects/services/media_assets, the identical
+// accepted tradeoff brain_requests.relatedEntityId already makes.
+//
+// NEVER stored on this table, by design: API keys/credentials, the raw
+// provider request or response, full hidden system-prompt text,
+// customer/order/lead PII, or an arbitrary browser-submitted remote URL.
+// ---------------------------------------------------------------------
+export const aiGenerationJobs = pgTable(
+  "ai_generation_jobs",
+  {
+    id: text("id").primaryKey(),
+    requestedByAdminUserId: uuid("requested_by_admin_user_id").references(() => adminUsers.id, {
+      onDelete: "set null",
+    }),
+    taskPreset: text("task_preset").notNull().$type<CreativeTaskPreset>(),
+    // Polymorphic, application-level only — see the table comment above.
+    contextSourceType: text("context_source_type").$type<CreativeContextSourceType>(),
+    contextSourceId: text("context_source_id"),
+    // The FINAL, bounded, sanitized brief actually sent to the image
+    // provider — never a raw freeform prompt dump. See CreativeBrief's
+    // own comment in src/data/creative-studio.ts.
+    brief: jsonb("brief").notNull().$type<CreativeBrief>(),
+    // Independently re-verified (exists, active, type=image) at
+    // generation time, never trusted as already-valid structure.
+    referenceMediaAssetIds: jsonb("reference_media_asset_ids").notNull().$type<string[]>().default([]),
+    // Free text, not a $type<>()-narrowed enum — mirrors
+    // brainRequests.provider/.model exactly (see that table's own comment):
+    // a provider/model name changes on a faster timescale than this
+    // schema's TypeScript layer should chase. Allowlisted at the
+    // application layer only (src/data/creative-studio.ts).
+    provider: text("provider").notNull(),
+    model: text("model").notNull(),
+    requestedSize: text("requested_size").notNull().$type<ImageGenerationSize>(),
+    requestedQuality: text("requested_quality").notNull().$type<ImageGenerationQuality>(),
+    status: text("status").notNull().$type<ImageGenerationStatus>(),
+    errorCategory: text("error_category").$type<ImageGenerationErrorCategory>(),
+    // Output — set only when status='completed'. The generated image is
+    // uploaded to real Blob storage (validated via the exact same
+    // validateImageUpload() every human upload already goes through)
+    // BEFORE this row is ever written, so outputUrl always points at a
+    // real, already-validated object — never a raw, unvalidated provider
+    // URL, and never a value the browser could have supplied.
+    outputStorageKey: text("output_storage_key"),
+    outputUrl: text("output_url"),
+    outputWidth: integer("output_width"),
+    outputHeight: integer("output_height"),
+    outputSizeBytes: integer("output_size_bytes"),
+    // Nullable until the owner explicitly runs the separate Save action —
+    // see the table comment above. ON DELETE SET NULL: deleting the saved
+    // media_assets row later must never delete or block deletion of this
+    // permanent generation-history record.
+    outputMediaAssetId: text("output_media_asset_id").references(() => mediaAssets.id, { onDelete: "set null" }),
+    // Small, numeric, non-sensitive only — identical shape/unit convention
+    // to brain_requests.usageMetadata (integer microdollars), a
+    // deliberately SEPARATE column/table from Brain's own text-request
+    // accounting, per approval. No cost figures are hardcoded in this
+    // migration.
+    usageMetadata: jsonb("usage_metadata").$type<ImageGenerationUsageMetadata>(),
+    // Orthogonal to status — see the table comment above. Never deletes
+    // the Blob object or this row; only hides it from the active Studio
+    // review workflow.
+    discardedAt: timestamp("discarded_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    // Set together with outputMediaAssetId, by the same Save action.
+    savedAt: timestamp("saved_at", { withTimezone: true }),
+  },
+  (table) => [
+    index("ai_generation_jobs_created_at_idx").on(table.createdAt),
+    index("ai_generation_jobs_requested_by_admin_user_id_idx").on(table.requestedByAdminUserId),
+    index("ai_generation_jobs_output_media_asset_id_idx").on(table.outputMediaAssetId),
+  ],
+);
+
+export const aiGenerationJobsRelations = relations(aiGenerationJobs, ({ one }) => ({
+  requestedByAdminUser: one(adminUsers, {
+    fields: [aiGenerationJobs.requestedByAdminUserId],
+    references: [adminUsers.id],
+  }),
+  outputMediaAsset: one(mediaAssets, { fields: [aiGenerationJobs.outputMediaAssetId], references: [mediaAssets.id] }),
 }));
