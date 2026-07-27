@@ -15,7 +15,21 @@ export type CustomerListRow = {
   company: string | null;
   phone: string | null;
   orderCount: number;
-  lastOrderAt: Date | null;
+  // Phase 21A hotfix: intentionally `string | null`, NOT `Date`. This is a
+  // raw `max(orders.created_at)` SQL aggregate (see listCustomers() below)
+  // — unlike a plainly-selected timestamptz column (which Drizzle's
+  // schema-aware column mapping parses into a real Date, e.g. every date
+  // field getCustomerById() returns), a raw sql<T> expression's `<T>` is a
+  // compile-time-only type assertion with zero runtime effect. Verified
+  // directly against this app's actual driver (drizzle-orm/neon-serverless
+  // Pool): this aggregate comes back as a Postgres-formatted timestamp
+  // STRING (e.g. "2026-07-25 04:40:26.220708+00"), never a Date instance.
+  // Callers MUST wrap a non-null value in `new Date(...)` before calling
+  // any Date method — see the Customers list page for the one real
+  // consumer. This type was previously (incorrectly) declared `Date |
+  // null`, which let a real runtime TypeError ship silently past tsc/
+  // lint/build — see CLAUDE.md's Phase 21A writeup for the full incident.
+  lastOrderAt: string | null;
 };
 
 export type ListCustomersParams = {
@@ -60,7 +74,9 @@ export async function listCustomers(params: ListCustomersParams): Promise<ListCu
         company: customers.company,
         phone: customers.phone,
         orderCount: count(orders.id),
-        lastOrderAt: sql<Date | null>`max(${orders.createdAt})`,
+        // Honest raw-SQL type — see CustomerListRow.lastOrderAt's own
+        // comment for why this is `string | null`, not `Date | null`.
+        lastOrderAt: sql<string | null>`max(${orders.createdAt})`,
       })
       .from(customers)
       .leftJoin(orders, eq(orders.customerId, customers.id))

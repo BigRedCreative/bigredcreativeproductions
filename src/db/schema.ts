@@ -1,4 +1,5 @@
 import {
+  bigserial,
   boolean,
   index,
   integer,
@@ -1169,3 +1170,71 @@ export const aiGenerationJobsRelations = relations(aiGenerationJobs, ({ one }) =
   }),
   outputMediaAsset: one(mediaAssets, { fields: [aiGenerationJobs.outputMediaAssetId], references: [mediaAssets.id] }),
 }));
+
+// ---------------------------------------------------------------------
+// Phase 21A — the Postgres half of the two-layer rate-limit design (the
+// other half is Vercel Firewall, configured entirely outside this
+// codebase, for public/IP-level edge protection — see CLAUDE.md's Phase
+// 21A architecture report). This table exists specifically for
+// business-identity-scoped short-window burst limits (Big Red Brain,
+// Creative Studio, the video-upload-token route) that a network-edge
+// firewall can't naturally express, since those limits key on
+// admin_users.id, not just source IP.
+//
+// Deliberately the smallest possible shape — a pure, high-insert-rate
+// event log, structurally closer to a metrics counter than a business
+// entity, which is why `id` is `bigserial` here rather than this
+// schema's usual `uuid`/text-prefix convention: nothing ever joins
+// against this table's own id, and a uuid's random-insert index bloat is
+// unnecessary overhead for a table with this row-churn profile.
+//
+// `key` is polymorphic by design, matching the exact accepted tradeoff
+// `notes.entityId`/`audit_log.entityId` already make elsewhere in this
+// schema: depending on `scope`, it holds either a real `admin_users.id`
+// (as text) or an HMAC-SHA256 of a normalized IP address — NEVER a raw
+// IP. A plain unsalted hash of an IPv4 address is trivially reversible
+// (the entire IPv4 space is small enough to exhaustively pre-hash), so a
+// keyed HMAC is the actual minimum needed for "a safer deterministic
+// representation than raw IP" to mean anything — see
+// src/server/rate-limit.ts (Phase 21A-1C, not yet built) for where that
+// HMAC is actually computed. This table itself has no FK to admin_users
+// for the same polymorphic-key reason notes/audit_log don't have one
+// either — referential integrity here is an application-level guarantee,
+// not a database-enforced one.
+//
+// No `updated_at` — append-only, matching audit_log's own convention.
+// No automated cleanup job exists yet (documented, deliberately deferred
+// per Phase 21A approval — at this business's real traffic scale, this
+// table's growth is negligible for a long time; a future periodic
+// `DELETE ... WHERE created_at < now() - interval '7 days'` is the
+// natural eventual fix, not built this phase).
+// ---------------------------------------------------------------------
+export const rateLimitEvents = pgTable(
+  "rate_limit_events",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    // e.g. "brain" | "creative_studio" | "video_token" — a closed
+    // vocabulary enforced at the application layer (src/server/
+    // rate-limit.ts), matching every other enum-shaped text column in
+    // this schema.
+    scope: text("scope").notNull(),
+    // admin_users.id (as text) for admin-scoped limits, or
+    // HMAC-SHA256(normalized IP) for the one IP-scoped application limit
+    // (video-upload-token's secondary per-IP check) — never a raw IP,
+    // never an email, never a prompt/request body.
+    key: text("key").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    // Column order matters: scope/key are always matched with `=`
+    // (equality predicates), created_at is always matched with `>` (a
+    // range predicate) — Postgres B-tree best practice is equality
+    // columns first, range column last, so a query can seek straight to
+    // the exact (scope, key) prefix and then do one efficient forward
+    // scan through created_at within it, rather than scanning a much
+    // wider slice of the index. Every real query this table serves is
+    // `WHERE scope = ? AND key = ? AND created_at > ?` — this is the one
+    // index that shape needs.
+    index("rate_limit_events_scope_key_created_at_idx").on(table.scope, table.key, table.createdAt),
+  ],
+);

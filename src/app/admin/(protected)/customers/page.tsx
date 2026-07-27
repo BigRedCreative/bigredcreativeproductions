@@ -53,7 +53,10 @@ export default async function AdminCustomersPage({ searchParams }: CustomersPage
                     <td>{row.company ?? "—"}</td>
                     <td>{row.phone ?? "—"}</td>
                     <td>{row.orderCount}</td>
-                    <td>{row.lastOrderAt ? row.lastOrderAt.toLocaleDateString("en-US") : "—"}</td>
+                    {/* Phase 21A hotfix: row.lastOrderAt is a raw SQL aggregate
+                        string (see CustomerListRow's own comment), never a
+                        Date — must be parsed before formatting. */}
+                    <td>{row.lastOrderAt ? new Date(row.lastOrderAt).toLocaleDateString("en-US") : "—"}</td>
                   </tr>
                 ))}
               </tbody>
