@@ -13,4 +13,16 @@ import Google from "next-auth/providers/google";
 // CLAUDE.md "Admin foundation" for the full writeup.
 export const { handlers, auth, signIn, signOut } = NextAuth({
   providers: [Google],
+  // Phase 21B — an explicit, intentional session lifetime replacing
+  // Auth.js's own inherited 30-day default (confirmed against current
+  // Auth.js docs before this change — `session.maxAge` is the correct v5
+  // configuration location, in seconds). 7 days is proportionate for a
+  // single-owner admin surface that increasingly touches money-adjacent
+  // and AI-cost-bearing actions, without being so short it becomes a
+  // daily annoyance. This does not change the JWT strategy, encryption,
+  // cookie names, cookie flags, or any callback — only how long a session
+  // is allowed to live before Auth.js requires a fresh sign-in.
+  session: {
+    maxAge: 60 * 60 * 24 * 7, // 7 days, in seconds
+  },
 });

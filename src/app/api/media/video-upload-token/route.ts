@@ -3,6 +3,9 @@ import type { HandleUploadBody } from "@vercel/blob/client";
 import { getAdminUserOrNull } from "@/server/require-admin-user";
 import { ALLOWED_VIDEO_CONTENT_TYPES, MAX_VIDEO_UPLOAD_BYTES } from "@/server/validate-video-upload";
 import { checkVideoUploadTokenRateLimit, extractClientIp } from "@/server/rate-limit";
+import { validateSameOriginRequest } from "@/server/validate-origin";
+import { recordAuditEvent } from "@/server/audit-log";
+import { getDb } from "@/db";
 
 // The ONE endpoint that issues a short-lived, scoped Vercel Blob client
 // upload token for video — the reason video uses a client-direct-to-Blob
@@ -30,6 +33,26 @@ export async function POST(request: Request): Promise<Response> {
   const adminUser = await getAdminUserOrNull();
   if (!adminUser) {
     return Response.json({ error: "Not authorized." }, { status: 401 });
+  }
+
+  // Phase 21B — same-origin enforcement, for this authenticated request
+  // specifically. Runs BEFORE the rate limiter and BEFORE any Blob
+  // interaction — a rejected request here has zero provider/storage side
+  // effects and consumes no quota. See src/server/validate-origin.ts for
+  // the full design rationale. Audited (never the Origin/Host/IP values
+  // themselves, only that a rejection happened and why, in a closed
+  // vocabulary) so a genuine cross-origin attempt against real admin
+  // authority leaves a real trace.
+  const originResult = validateSameOriginRequest(request);
+  if (!originResult.ok) {
+    await recordAuditEvent(getDb(), {
+      adminUserId: adminUser.id,
+      action: "csrf.origin_rejected",
+      entityType: "security",
+      entityId: "video_upload_token",
+      metadata: { reason: originResult.reason },
+    });
+    return Response.json({ error: "Request rejected." }, { status: 403 });
   }
 
   // Phase 21A-1C — BOTH the authenticated-admin limit AND the
