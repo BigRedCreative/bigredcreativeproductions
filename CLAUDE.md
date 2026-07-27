@@ -2937,6 +2937,97 @@ You personally completed the full manual acceptance pass with these headers live
 
 No database write of any kind — confirmed via a full real-data baseline read both before and after this phase, byte-identical throughout (`brain_requests`, `rate_limit_events`, `ai_generation_jobs`, `media_assets`, `audit_log`, `customers`, `leads`, `notes`, orders, `brand_settings`, `motion_settings`, `services`, `portfolio_projects`, `products`, and the Homepage Hero's media reference all unchanged). No dependency was added, removed, or upgraded. The rate limiter (Phase 21A-1B/21A-1C) was not touched, reverted, or altered. No CSRF/Origin hardening, no AI video generation, and no payment work began — all remain explicitly out of scope for this phase.
 
+## Auth/Session + Origin/CSRF Hardening (Phase 21B)
+
+**Status: complete — the smallest justified set of changes identified by a full architecture audit of this codebase's authentication/authorization/CSRF model.** The audit itself found the existing model already sound in almost every respect (every one of the 39 admin Server Actions independently re-verified to call `requireAdminUser()`, zero open-redirect surface anywhere, Next.js's own built-in Server Action Origin/Host CSRF protection already covers every mutation) — this phase closes the one real, concrete gap the audit found, plus two small, deliberate hardening decisions, and does not add complexity beyond what the evidence justified.
+
+### The one real gap: `/api/media/video-upload-token` had no Origin check
+
+Every admin **Server Action** already gets Next.js's own built-in CSRF protection (Origin compared to Host/X-Forwarded-Host, mismatches rejected — confirmed against current Next.js docs). That mechanism is specific to the `'use server'` action-invocation path and does **not** extend to arbitrary `POST` Route Handlers. Of this app's three Route Handlers, `/api/auth/[...nextauth]` is Auth.js's own managed contract (untouched) and `/api/orders` is intentionally public with no ambient authority to abuse (a cross-site POST there can only do what any anonymous visitor could already do through the real checkout UI — an abuse/rate-limiting concern, not classic CSRF). `/api/media/video-upload-token` was the one exception: cookie-authenticated, carrying real authority (minting a Blob upload token), with no same-origin enforcement of its own. This phase adds exactly that, and nowhere else.
+
+### `src/server/validate-origin.ts` — the Origin helper
+
+```ts
+export function validateSameOriginRequest(request: Request): OriginValidationResult
+```
+
+Fails closed in every ambiguous case — deliberately, per the approved design:
+
+| Case | Result |
+|---|---|
+| `Origin` header missing | Reject (`missing_origin`) |
+| `Origin` present but unparseable | Reject (`malformed_origin`) |
+| Both `Origin`/`X-Forwarded-Host` **and** `Host` missing | Reject (`missing_host`) |
+| `Origin`'s host ≠ deployment host | Reject (`origin_mismatch`) |
+| `Origin`'s host == deployment host | Allow |
+
+No `Referer` fallback — `Referer` is weaker (often legitimately absent for privacy reasons) and was explicitly excluded rather than used as a second-chance check. The "deployment host" comparison prefers `X-Forwarded-Host`, falling back to `Host` — confirmed against Vercel's own current documentation that these two headers are identical and reflect how Vercel's edge actually routed the specific request to this deployment (the real production custom domain, or that exact Preview deployment's own `*.vercel.app` host) — a materially different trust class than `X-Forwarded-For` (which Vercel explicitly documents it overwrites specifically to prevent client IP spoofing). This is why `localhost` development and Vercel Preview deployments both work with **zero special-casing**: in both environments, a genuine same-origin browser request's `Origin` header and the server's own `Host`/`X-Forwarded-Host` naturally agree, because they both describe the same real place the request was actually sent.
+
+**Scoped narrowly on purpose**: this check only ever runs for an already-authenticated request (`getAdminUserOrNull()` succeeds first) — CSRF is fundamentally about abusing an *authenticated* session's ambient authority, so gating this specific check behind authentication first (rather than checking Origin before or independent of auth) keeps the logic simple and matches what's actually being protected. It is applied to exactly one route — not globally, not to `/api/orders`, not to the Auth.js callback route.
+
+### Ordering — rejection happens before any real side effect
+
+In `video-upload-token/route.ts`, the Origin check runs immediately after the existing auth check and strictly **before** the rate limiter and before any Blob interaction:
+
+```
+getAdminUserOrNull()  →  validateSameOriginRequest()  →  checkVideoUploadTokenRateLimit()  →  handleUpload()
+   (existing, 401)         (NEW, 403 + audit)              (existing, 429)                    (existing)
+```
+
+A rejected request therefore has **zero** provider/storage side effects and consumes **zero** rate-limit quota — confirmed by the code path itself (the function returns immediately on rejection, before either subsequent call is ever reached) and by automated test (below).
+
+### Audit event — `csrf.origin_rejected`
+
+Written directly (no transaction wrapper needed — it's the only write on this path, nothing else to commit atomically alongside it), reusing the existing `audit_log` table verbatim:
+
+```ts
+{
+  adminUserId: adminUser.id,          // always a real, already-authenticated admin — this
+                                       // check only ever runs post-auth-success
+  action: "csrf.origin_rejected",
+  entityType: "security",
+  entityId: "video_upload_token",      // names the route, not a real business entity
+  metadata: { reason: originResult.reason },  // one closed-vocabulary string only
+}
+```
+
+**Confirmed absent from the metadata, by construction (there is no field to put them in) and by direct code review**: the raw `Origin` header value, the raw `Host`/`X-Forwarded-Host` value, any IP address, any cookie or session value, any OAuth token, any Blob token, any credential. `reason` is one of exactly four fixed strings (`missing_origin` | `malformed_origin` | `missing_host` | `origin_mismatch`) — useful operational signal (was this a confused legitimate client vs. a genuine cross-origin attempt) without ever exposing the values that would matter to an attacker doing reconnaissance.
+
+### Explicit session `maxAge` — 7 days
+
+`src/auth.ts` gained one config block: `session: { maxAge: 60 * 60 * 24 * 7 }` (seconds — the correct Auth.js v5 configuration location, confirmed against current docs before this change). Replaces Auth.js's own inherited 30-day default with an intentional, reviewed value — proportionate for a single-owner admin surface that increasingly touches money-adjacent and AI-cost-bearing actions, without being short enough to become a daily annoyance. **Nothing else about authentication changed**: same JWT strategy (implicit, no adapter), same encryption, same cookie name/prefix, same cookie flags, same provider config, same callbacks (there were none before, there are none now), same `role` logic, same `requireAdminUser()`/`getAdminUserOrNull()`, same `proxy.ts` fast-path behavior.
+
+### Emergency admin revocation procedure — documented, not newly built
+
+This procedure already worked correctly before this phase (verified by direct code inspection of `require-admin-user.ts`'s `lookupAdminUser()`, which re-queries `admin_users` fresh, with no caching, on every single protected request) — this phase's contribution is writing it down, since it existed only as an implicit consequence of the authorization design, not as a documented runbook anywhere.
+
+**To revoke a compromised or departing admin's access immediately:**
+
+1. Set that admin's `admin_users.active = false` (the same manual, direct-SQL process already used for onboarding an admin since Phase 12 — no admin UI for this exists yet, and building one is explicitly out of scope for this phase).
+
+**What this does and does not do:**
+
+- The admin's existing Google-issued JWT/session cookie **may still be present in their browser** — deactivating the `admin_users` row does nothing to the token itself, since Auth.js's JWT is entirely independent of this application's own authorization table.
+- **Every protected surface in this codebase re-checks `admin_users` fresh, on every single request** — the page-level protected layout, and independently, every one of the 39 admin Server Actions and both authenticated Route Handlers (`getAdminUserOrNull()`/`requireAdminUser()` share the identical internal lookup). None of them trust `role`/`active` from the JWT — they are never even stored there.
+- **Therefore `active = false` blocks every subsequent authorized request immediately** — the very next page load, Server Action, or API call that admin attempts will be rejected (redirected to `/admin/access-denied` for pages/Server Actions, or a clean `401`/`getAdminUserOrNull() → null` for JSON APIs) — regardless of how much time is left on their JWT.
+- The lingering JWT itself is harmless once `active = false` — it grants Google-verified *identity*, never *authorization*, and this application's real authorization boundary has never trusted the token for that.
+- **`AUTH_SECRET` rotation remains the only global, all-sessions-at-once emergency tool** — it invalidates every JWT for every admin simultaneously (a single-owner account today, so low blast radius, but a blunt instrument regardless: it also signs out any other legitimate active admin, and would need to be done via the hosting platform's environment-variable rotation, not from within this app). Use `active = false` for a single compromised account; reserve `AUTH_SECRET` rotation for a suspected broader compromise.
+- **No one-click "deactivate admin" UI exists** — this remains a manual database operation, explicitly not built in this phase, matching the same manual bootstrap process this project has used for admin account management since Phase 12.
+
+### Automated test results — 19/19
+
+Run through a temporary, non-destructive test harness (this codebase's established pattern — no jest/vitest/RTL exists, so every regression check is a real request against a real running server, using clearly-tagged temporary data, cleaned up in a `finally` block): same-origin request succeeds; cross-origin, missing-Origin, and malformed-Origin requests are all rejected with `403`; a rejected request creates **zero** rate-limit events and **zero** Blob/token side effects; a rejected request creates **exactly one** `csrf.origin_rejected` audit row, with metadata containing only the closed-vocabulary `reason` string — confirmed absent of any Origin/Host/IP/token/credential value; an unauthenticated request still fails with the pre-existing `401` before the Origin check is ever reached; `/api/orders` and the Auth.js callback route were both confirmed completely unaffected; `localhost` and a simulated Preview-style host both resolved correctly with zero special-case code; the verified admin identity used for rate-limiting cannot be influenced by client-submitted data; existing Brain/Creative Studio rate-limiting behavior is unchanged; CSP/security headers (Phase 21A-2) remain present and unchanged; the configured session `maxAge` resolves to exactly 604800 seconds (7 days). No real owner account was deactivated, no real OpenAI call was made, no real Blob upload occurred.
+
+**Honest test-cleanup issue, found and corrected**: the test script's own final cleanup-verification assertion checked only that its `video_upload_token_admin`-scope temporary row was deleted — it never looked for the *separate* `video_upload_token_ip`-scope row the same test call also creates (a different key: an HMAC hash, not the plain test tag the assertion searched for), so the test reported "cleanup passed" while that one row was actually still present. This was **not** caught by the test's own self-report — it was caught during the independent, separate real-data baseline re-check performed immediately afterward, which is exactly the purpose that second, independent check serves. The leftover row was deleted directly, and a follow-up query confirmed `rate_limit_events` back to exactly one row — the one real, legitimate `brain_admin` event from Phase 21A-1C's own acceptance history. No real data was at risk at any point; this was a test-script blind spot, not an application bug.
+
+### Real manual acceptance
+
+You confirmed manual acceptance passed — sign-in and general admin functionality were verified working normally under the new 7-day session and the new Origin check. **A real video upload through the Media Library was not performed during this acceptance window** — confirmed by direct, read-only inspection rather than assumed: `media_assets` still holds exactly the same 4 rows as before this phase (the one real video asset shared across Homepage Hero/SP Juices/Graphic Design dates from Phase 19A/19B, July 25th — nothing newer), and `audit_log` contains zero `csrf.origin_rejected` events and no new `media.uploaded` entry of any kind since this phase began. This is stated plainly rather than assumed, matching this project's standing honesty discipline: the login/dashboard/general-functionality acceptance is real and confirmed; the specific "upload a real video to prove the Origin check doesn't interfere with legitimate use" step from the suggested manual checklist was not exercised, and remains unverified against a real upload — though it is covered by the automated same-origin-request-succeeds test, and by the unmodified, untouched rate-limit/Blob-interaction code paths themselves.
+
+### What this phase deliberately did not add
+
+Per the approved scope: no custom CSRF tokens (Next.js's own built-in Server Action Origin/Host check already covers every mutation — no evidence justified an additional mechanism). No `Referer` fallback. No general-purpose safe-redirect helper (the audit found zero open-redirect surface anywhere in this codebase to protect against). No `admin.login_succeeded`/`admin.login_denied` audit events (the denied case would accumulate unbounded volume from non-owner internet traffic hitting `/admin/login` — exactly the bot-volume risk explicitly avoided). No app-level login rate limiter (Google owns credential verification entirely; the realistic brute-force surface is the OAuth handshake itself, already rate-limited upstream by Google, with Vercel Firewall coverage for `/admin/login` still planned as part of the broader, not-yet-applied 21H work). No re-authentication/typed-confirmation flow (nothing in this app today reaches a stakes level that would justify one — reserved for a future real-payment or credential-management phase). No new database table, no migration, no npm package, no Next.js/Auth.js version change.
+
 ## Roadmap
 
 **This section is the single, authoritative statement of the phase timeline from here forward.** It is documentation only — nothing described below as a future phase has been implemented, scheduled with a date, or approved for implementation merely by appearing here. Every phase-specific section elsewhere in this file (Video Media Foundation, Portfolio/Service Video Support, etc.) remains the authoritative record of what has **already shipped** and its own real acceptance-test history — this section does not rewrite or supersede any of that. When a future phase below actually starts, it gets its own dedicated section (following this file's established pattern) with real architecture decisions, real test results, and real acceptance history — the entries below are deliberately kept at planning-level detail, not implementation detail, until that happens.
@@ -2980,7 +3071,7 @@ Extends Phase 20C-1/20C-2's foundation to video: branding-presentation and logo-
 - **Phase 21A-1B — Rate Limit Schema — complete.** See "Rate Limiting (Phase 21A-1B / 21A-1C)" above.
 - **Phase 21A-1C — Shared Application Rate Limiter — complete.** Same section — exact scopes/limits, advisory-lock concurrency, HMAC IP privacy, real acceptance history.
 - **Phase 21A-2 — Security Headers & CSP — complete.** See "Security Headers & CSP (Phase 21A-2)" above — full header set, final CSP, HSTS/Permissions-Policy/COOP, resource-needs audit, real production browser verification, real manual acceptance.
-- **Phase 21B — Auth/Session + Origin/CSRF Hardening — not started.** The remaining attack-testing scope from the original audit's "21A — Admin + Authentication" bullet below (session security/expiration, logout behavior, direct-request authorization-bypass attempts, CSRF, privilege escalation, IDOR) plus Origin validation — explicitly deferred out of both 21A-1B/1C and 21A-2, per direct decision each time. **Naming note**: this "Phase 21B" label refers to this specific auth/session/CSRF work, and is distinct from the original audit's own "21B — Store + Checkout + Orders" bullet immediately below (kept at its original letter so it stays consistent with every other original 21A–21K reference elsewhere in this file, including "the rate-limiting portion of 21H"). Don't conflate the two.
+- **Phase 21B — Auth/Session + Origin/CSRF Hardening — complete.** See "Auth/Session + Origin/CSRF Hardening (Phase 21B)" above — a full architecture audit of the original "21A — Admin + Authentication" bullet's scope (session security/expiration, logout behavior, direct-request authorization-bypass attempts, CSRF, privilege escalation, IDOR) found the existing model already sound almost everywhere, and implemented only the smallest justified set the audit's evidence actually supported: an Origin/same-origin check scoped to the one Route Handler that needed it (`/api/media/video-upload-token`), an explicit 7-day session `maxAge` (replacing Auth.js's inherited 30-day default), and a documented emergency-revocation procedure. **Naming note**: this "Phase 21B" label refers to this specific auth/session/CSRF work, and is distinct from the original audit's own "21B — Store + Checkout + Orders" bullet immediately below (kept at its original letter so it stays consistent with every other original 21A–21K reference elsewhere in this file, including "the rate-limiting portion of 21H"). Don't conflate the two. Not addressed by this phase, and remaining open from the original 21A scope: MFA expectations for privileged accounts, a broader logout-behavior review, and a one-click admin deactivation UI (deliberately deferred, per approval).
 - **Everything else in the original 21A–21K breakdown below** (the rest of 21A's original scope now tracked as Phase 21B above; 21B–21G; the rest of 21H — Vercel Firewall's own dashboard configuration for public/IP-level surfaces, contact form, checkout, order creation, admin login; 21I–21K) — **not started.**
 - **Phase 20D — AI Video Generation — not started**, unrelated to Phase 21, requires its own separate architecture/security/cost review before starting (see its own Roadmap entry above).
 
