@@ -9,7 +9,16 @@ type Database = ReturnType<typeof getDb>;
 type Executor = Pick<Database, "insert">;
 
 export type AuditEventInput = {
-  adminUserId: string;
+  // Phase 21C-1 — nullable: every event before this phase originated from
+  // an authenticated admin action, so this was always a real id. The
+  // checkout-originated order.created event (src/server/create-order.ts)
+  // is the first genuinely admin-less event this codebase writes — a real
+  // customer, unauthenticated, triggered it — so `null` here honestly
+  // records "no admin was involved" rather than requiring a fake id.
+  // audit_log.admin_user_id was already a nullable column (ON DELETE SET
+  // NULL) before this change; this only widens the TS type to match what
+  // the schema already allowed.
+  adminUserId: string | null;
   action: string;
   entityType: string;
   entityId: string;

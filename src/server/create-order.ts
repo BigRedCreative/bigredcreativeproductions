@@ -5,7 +5,7 @@ import { customers, orderLines, orders } from "@/db/schema";
 import { buildOrderDraft } from "@/data/orders";
 import type { OrderCustomer } from "@/data/orders";
 import type { CartItem } from "@/data/cart";
-import { isUniqueViolation } from "@/server/is-unique-violation";
+import { recordAuditEvent } from "@/server/audit-log";
 
 export type CreateOrderResult =
   | { ok: true; id: string; orderNumber: string; status: string }
@@ -65,6 +65,16 @@ export async function createOrder(
             .where(eq(customers.id, customerId));
         }
       } else {
+        // Phase 21C-1 fix — a genuinely concurrent checkout with the same
+        // brand-new email can race here: two transactions both see no
+        // existing customer and both attempt this insert. `onConflictDoNothing`
+        // is used specifically because it never throws on a conflict — a
+        // plain INSERT that hits `customers_email_unique` would, and
+        // catching that inside this same transaction would leave the
+        // transaction aborted for every statement after it (Postgres marks
+        // a transaction unusable the moment any statement in it errors),
+        // making a same-transaction recovery SELECT unreliable. Racing past
+        // the constraint here costs nothing but a second, harmless SELECT.
         const [created] = await tx
           .insert(customers)
           .values({
@@ -74,8 +84,37 @@ export async function createOrder(
             phone: customer.phone,
             company: customer.company,
           })
+          .onConflictDoNothing({ target: customers.email })
           .returning({ id: customers.id });
-        customerId = created.id;
+
+        if (created) {
+          customerId = created.id;
+        } else {
+          // Lost the race — some other concurrent request's insert won.
+          // Re-query for the winner's row inside this same, still-healthy
+          // transaction (safe: onConflictDoNothing never threw, so nothing
+          // here aborted the transaction). Per approved data semantics: the
+          // existing/winning row always wins — this request's own
+          // first/last name, phone, and company are discarded rather than
+          // merged or used to patch the winner. This is deliberately
+          // simpler than the non-destructive blank-field patch above (which
+          // only applies when this request found a genuinely pre-existing
+          // customer up front, not a same-instant race) — no customer-merge
+          // logic is invented for the race case.
+          const raced = await tx.query.customers.findFirst({
+            where: eq(customers.email, normalizedEmail),
+          });
+          if (!raced) {
+            // Structurally shouldn't happen (a conflict implies a row
+            // exists) — a real, unexpected condition, not a race to
+            // silently paper over. Throwing here aborts and rolls back
+            // this whole transaction, which the outer try/catch below
+            // turns into the same safe, generic client-facing error every
+            // other unexpected failure already produces.
+            throw new Error("Customer insert conflicted on customers_email_unique but no row was found on re-query.");
+          }
+          customerId = raced.id;
+        }
       }
 
       // Sequence-generated, never SELECT MAX()+1 — safe under concurrent
@@ -84,39 +123,56 @@ export async function createOrder(
       const nextValue = (sequenceResult.rows[0] as { value: string }).value;
       const orderNumber = `BRCP-${nextValue}`;
 
+      // Phase 21C-1 fix — this used to be a plain INSERT wrapped in a
+      // try/catch that, on a caught unique_violation, re-queried for the
+      // winning order inside this same transaction. That pattern was
+      // proven broken by Phase 21C-1's genuine-concurrency testing: once a
+      // statement inside a Postgres transaction errors, the whole
+      // transaction is left aborted (Postgres error 25P02, "current
+      // transaction is aborted") — every subsequent statement in it,
+      // including a recovery SELECT, fails too. `onConflictDoNothing`
+      // sidesteps this entirely: it never throws on a conflict, so the
+      // transaction is never poisoned and a follow-up SELECT is safe. This
+      // exactly mirrors the customer-email race fix above, applied to the
+      // same class of problem for `orders_client_request_id_unique`.
+      const [insertedRow] = await tx
+        .insert(orders)
+        .values({
+          id: draft.id,
+          orderNumber,
+          status: draft.status,
+          customerId,
+          pricingSummary: draft.pricingSummary,
+          notes: draft.notes,
+          source: "checkout",
+          clientRequestId,
+          createdAt: new Date(draft.createdAt),
+          updatedAt: new Date(draft.updatedAt),
+        })
+        .onConflictDoNothing({ target: orders.clientRequestId })
+        .returning();
+
       let insertedOrder: typeof orders.$inferSelect;
-      try {
-        const [row] = await tx
-          .insert(orders)
-          .values({
-            id: draft.id,
-            orderNumber,
-            status: draft.status,
-            customerId,
-            pricingSummary: draft.pricingSummary,
-            notes: draft.notes,
-            source: "checkout",
-            clientRequestId,
-            createdAt: new Date(draft.createdAt),
-            updatedAt: new Date(draft.updatedAt),
-          })
-          .returning();
-        insertedOrder = row;
-      } catch (error) {
-        // A concurrent duplicate request (e.g. a rapid double-click that
-        // raced past the fast-path check above) hit the unique constraint
-        // on client_request_id first. That's the real idempotency
-        // authority — recover by returning the order it created instead
-        // of failing.
-        if (isUniqueViolation(error, "orders_client_request_id_unique")) {
-          const raced = await tx.query.orders.findFirst({
-            where: eq(orders.clientRequestId, clientRequestId),
-          });
-          if (raced) {
-            return { ok: true as const, id: raced.id, orderNumber: raced.orderNumber, status: raced.status };
-          }
+      if (insertedRow) {
+        insertedOrder = insertedRow;
+      } else {
+        // Lost the race — another concurrent request with this exact
+        // clientRequestId already committed (or is about to). Re-query
+        // inside this same, still-healthy transaction and return that
+        // order directly. Its order_lines and order.created audit event
+        // were already written by the winning request — writing them
+        // again here would create real duplicates, so this returns early
+        // rather than falling through to the inserts below.
+        const raced = await tx.query.orders.findFirst({
+          where: eq(orders.clientRequestId, clientRequestId),
+        });
+        if (!raced) {
+          // Structurally shouldn't happen (a conflict implies a row
+          // exists) — a real, unexpected condition, not a race to
+          // silently paper over.
+          throw new Error("Order insert conflicted on orders_client_request_id_unique but no row was found on re-query.");
         }
-        throw error;
+        return { ok: true as const, id: raced.id, orderNumber: raced.orderNumber, status: raced.status };
       }
 
       if (draft.lines.length > 0) {
@@ -142,6 +198,26 @@ export async function createOrder(
           })),
         );
       }
+
+      // Phase 21C-1 — the checkout path's own order.created event, the
+      // one genuinely admin-less audit event in this codebase (a real,
+      // unauthenticated customer triggered it — see AuditEventInput's own
+      // comment for why adminUserId is null here, not a fake id). Placed
+      // strictly after both inserts above succeed, and strictly INSIDE
+      // this transaction, so it commits/rolls back atomically with the
+      // order+lines it describes. This line is structurally unreachable
+      // from the fast-path idempotent-return above (which returns before
+      // this transaction even opens) and from the unique-violation
+      // race-recovery catch block below (which returns the OTHER
+      // request's already-existing order) — a retry of the same
+      // clientRequestId can never reach this line a second time.
+      await recordAuditEvent(tx, {
+        adminUserId: null,
+        action: "order.created",
+        entityType: "order",
+        entityId: insertedOrder.id,
+        metadata: { orderNumber: insertedOrder.orderNumber, source: "checkout", lineCount: draft.lines.length },
+      });
 
       return {
         ok: true as const,

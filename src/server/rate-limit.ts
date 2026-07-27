@@ -25,6 +25,7 @@ export const RATE_LIMIT_SCOPES = [
   "creative_studio_image",
   "video_upload_token_admin",
   "video_upload_token_ip",
+  "order_creation_ip",
 ] as const;
 export type RateLimitScope = (typeof RATE_LIMIT_SCOPES)[number];
 
@@ -156,6 +157,21 @@ const RATE_LIMIT_TIERS: Record<RateLimitScope, readonly RateLimitTier[]> = {
   // hour, keyed on the HMAC of the requester's IP (see hashIpForRateLimit
   // below) — never the raw IP.
   video_upload_token_ip: [{ tierId: "hourly", limit: 30, windowMs: ONE_HOUR_MS }],
+  // Phase 21C-1 — POST /api/orders is intentionally public (no session,
+  // no ambient authority — see CLAUDE.md's Phase 21C audit for why this
+  // is an abuse-prevention concern, not CSRF), so this is keyed on the
+  // HMAC of the requester's IP, never on anything client-submitted
+  // (email, name, order id, request body). Two tiers, mirroring the
+  // existing burst+window shape already used for the admin-scoped
+  // products: "burst" catches rapid bot/script fire, "hourly" catches
+  // sustained abuse from one IP over a longer window. No historical
+  // fallback needed — there is no pre-existing enforcement mechanism for
+  // order-creation-per-IP to reconcile against, so rate_limit_events
+  // starting empty for this scope is correct, not a transition-safety gap.
+  order_creation_ip: [
+    { tierId: "burst", limit: 5, windowMs: FIVE_MINUTES_MS },
+    { tierId: "hourly", limit: 10, windowMs: ONE_HOUR_MS },
+  ],
 };
 
 // --- Result shape -------------------------------------------------------------
@@ -375,4 +391,27 @@ export async function checkVideoUploadTokenRateLimit(adminUserId: string, rawIp:
     { scope: "video_upload_token_admin", key: adminUserId },
     { scope: "video_upload_token_ip", key: ipKey },
   ]);
+}
+
+// Phase 21C-1 — POST /api/orders's own rate limit. IP-only (single-entry,
+// unlike the video-token pair) since there is no admin identity on this
+// public route to also key against. Throws (never silently falls back to
+// allowing the request) when AUTH_SECRET is unavailable — the caller
+// (src/app/api/orders/route.ts) is responsible for catching that and
+// every other limiter failure and turning it into a controlled, fail-closed
+// 503, per the approved Phase 21C-1 design — this function itself does not
+// swallow or downgrade a fail-closed condition into a false "allowed".
+export async function checkOrderCreationRateLimit(rawIp: string | null): Promise<RateLimitResult> {
+  let ipKey: string;
+  if (rawIp === null) {
+    ipKey = UNKNOWN_IP_SENTINEL;
+  } else {
+    const hashed = hashIpForRateLimit(rawIp);
+    if (hashed === null) {
+      throw new Error("Rate limiter: AUTH_SECRET unavailable for order-creation IP check.");
+    }
+    ipKey = hashed;
+  }
+
+  return checkAndRecordRateLimit([{ scope: "order_creation_ip", key: ipKey }]);
 }
