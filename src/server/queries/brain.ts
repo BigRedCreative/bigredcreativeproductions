@@ -47,14 +47,15 @@ export async function getRecentBrainActivity(): Promise<BrainRequestHistoryRow[]
     .limit(RECENT_ACTIVITY_LIMIT);
 }
 
-// Powers the daily request cap (handle-request.ts) — counts every request
-// (completed or failed; a failed request still cost a provider call in
-// most cases) made since the start of the current UTC day. A plain COUNT
-// query is sufficient at this business's real scale — no counter/cache
-// infrastructure needed, matching the same judgment call already made for
-// admin search (ILIKE, not full-text search) elsewhere in this codebase.
-// Counts EVERY requestSource combined — the dashboard and all five entity
-// entry points share one daily counter, never a separate cap per source.
+// Historical/display-only as of Phase 21A-1C — no longer the authoritative
+// enforcement mechanism for the daily request cap (that moved to
+// src/server/rate-limit.ts's rate_limit_events-backed "daily" tier for the
+// brain_admin scope, which is per-admin and rolling-24h rather than this
+// function's global-across-admins, calendar-day count). Kept for potential
+// future dashboard display of "requests today"; not currently called by
+// any enforcement path. Counts EVERY requestSource combined — the
+// dashboard and all five entity entry points would share one counter here,
+// never a separate count per source.
 export async function countBrainRequestsToday(): Promise<number> {
   const db = getDb();
   const startOfToday = new Date();

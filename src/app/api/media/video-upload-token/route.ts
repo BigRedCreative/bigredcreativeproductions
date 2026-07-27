@@ -2,6 +2,7 @@ import { handleUpload } from "@vercel/blob/client";
 import type { HandleUploadBody } from "@vercel/blob/client";
 import { getAdminUserOrNull } from "@/server/require-admin-user";
 import { ALLOWED_VIDEO_CONTENT_TYPES, MAX_VIDEO_UPLOAD_BYTES } from "@/server/validate-video-upload";
+import { checkVideoUploadTokenRateLimit, extractClientIp } from "@/server/rate-limit";
 
 // The ONE endpoint that issues a short-lived, scoped Vercel Blob client
 // upload token for video — the reason video uses a client-direct-to-Blob
@@ -29,6 +30,21 @@ export async function POST(request: Request): Promise<Response> {
   const adminUser = await getAdminUserOrNull();
   if (!adminUser) {
     return Response.json({ error: "Not authorized." }, { status: 401 });
+  }
+
+  // Phase 21A-1C — BOTH the authenticated-admin limit AND the
+  // privacy-safe IP limit must pass before a token is issued (checked and
+  // recorded together — see checkVideoUploadTokenRateLimit's own comment
+  // on why this is all-or-nothing). This protects token ISSUANCE only —
+  // it never touches, and has no bearing on, ordinary public image/video
+  // delivery from Blob, which isn't a token-gated operation at all.
+  const clientIp = extractClientIp(request.headers);
+  const rateLimitResult = await checkVideoUploadTokenRateLimit(adminUser.id, clientIp);
+  if (!rateLimitResult.allowed) {
+    return Response.json(
+      { error: "Too many requests. Please try again later." },
+      { status: 429, headers: { "Retry-After": String(rateLimitResult.retryAfterSeconds) } },
+    );
   }
 
   const body = (await request.json()) as HandleUploadBody;

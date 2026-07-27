@@ -15,7 +15,7 @@ import {
 import { BRAIN_SYSTEM_INSTRUCTIONS, buildUserPrompt } from "@/server/brain/prompt";
 import { buildPromptSummary, buildResponseSummary } from "@/server/brain/safe-summary";
 import { buildUsageMetadata } from "@/server/brain/cost";
-import { countBrainRequestsToday } from "@/server/queries/brain";
+import { checkBrainRateLimit } from "@/server/rate-limit";
 import type { BrainErrorCategory, BrainRequestType, BrainRequestSource, BrainRelatedEntityType } from "@/data/brain";
 import { isValidBrainRequestType, isValidBrainRequestSource, isValidBrainRelatedEntityType } from "@/data/brain";
 
@@ -60,15 +60,15 @@ export type BrainAnswerState =
 const MAX_QUESTION_LENGTH = 500;
 const MAX_OUTPUT_TOKENS = 600;
 
-// Conservative v1 starting point — a single admin, cheap per-call pricing,
-// and a hard output-token ceiling per call already bound the worst case
-// tightly; this cap exists specifically to prevent an unbounded LOOP (a
-// bug, a stuck browser tab retry, etc.) from silently running up real
-// spend before a human notices. Applies across EVERY requestSource
-// combined (dashboard + all five entity entry points share one daily
-// counter) — never a separate cap per source. Raising it later is a
-// one-line, explicit, reviewable change — never silently auto-tuned.
-export const DAILY_BRAIN_REQUEST_CAP = 20;
+// Phase 21A-1C — the daily request cap (still 20, still shared across
+// EVERY requestSource combined — dashboard + all five entity entry
+// points) is now enforced by the shared Postgres rate limiter
+// (src/server/rate-limit.ts's "daily" tier for the brain_admin scope),
+// not a local constant + a plain COUNT query against brain_requests. That
+// module is the one place the number 20 is declared going forward — see
+// its own comment for the full transition-safety writeup. A NEW, separate
+// 5-requests-per-5-minutes burst tier is checked alongside it, on the same
+// call, purely as additional short-window abuse protection.
 
 // --- requestSource -> relatedEntityType compatibility ---------------------
 // "brain_dashboard" pairs with no entity (null); every other source must
@@ -245,36 +245,50 @@ export async function handleBrainRequest(
     return { errors: [resolved.error] };
   }
 
-  // --- Cost guardrail: daily request cap, shared across every source ------
-  const requestsToday = await countBrainRequestsToday();
-  if (requestsToday >= DAILY_BRAIN_REQUEST_CAP) {
-    await db.transaction(async (tx) => {
-      await tx.insert(brainRequests).values({
-        requestedByAdminUserId: adminUserId,
-        requestType,
-        requestSource,
-        relatedEntityType: resolved.relatedEntityType,
-        relatedEntityId: resolved.relatedEntityId,
-        promptSummary,
-        responseSummary: null,
-        provider: provider.providerName,
-        model: provider.modelName,
-        status: "failed",
-        usageMetadata: null,
-        errorCategory: "budget_exceeded",
+  // --- Rate limiting: BEFORE calling the provider, so a rejected request
+  //     spends zero OpenAI credits. Checks both the 5-per-5-minute burst
+  //     tier and the 20-per-rolling-24h-per-admin daily tier in one call
+  //     (see src/server/rate-limit.ts) — a rejection from EITHER tier
+  //     stops here. Only the DAILY tier's rejection gets a permanent
+  //     brain_requests row + audit event (a real, business-relevant spend
+  //     gate, matching the exact precedent already established before
+  //     this phase); a BURST rejection is a pure transient-abuse
+  //     rejection and is not persisted, matching Creative Studio's own
+  //     variation-cap precedent — this keeps a client that's hammering an
+  //     already-exceeded burst limit from filling brain_requests/
+  //     audit_log with noise. ------------------------------------------
+  const rateLimitResult = await checkBrainRateLimit(adminUserId);
+  if (!rateLimitResult.allowed) {
+    if (rateLimitResult.tierId === "daily") {
+      await db.transaction(async (tx) => {
+        await tx.insert(brainRequests).values({
+          requestedByAdminUserId: adminUserId,
+          requestType,
+          requestSource,
+          relatedEntityType: resolved.relatedEntityType,
+          relatedEntityId: resolved.relatedEntityId,
+          promptSummary,
+          responseSummary: null,
+          provider: provider.providerName,
+          model: provider.modelName,
+          status: "failed",
+          usageMetadata: null,
+          errorCategory: "budget_exceeded",
+        });
+        // Approved Phase 20B audit rule: relatedEntityType only, never
+        // relatedEntityId — brain_requests already permanently stores the
+        // id; audit metadata stays minimal.
+        await recordAuditEvent(tx, {
+          adminUserId,
+          action: "brain.requested",
+          entityType: "brain_request",
+          entityId: "dashboard",
+          metadata: { requestType, requestSource, ...(resolved.relatedEntityType ? { relatedEntityType: resolved.relatedEntityType } : {}) },
+        });
       });
-      // Approved Phase 20B audit rule: relatedEntityType only, never
-      // relatedEntityId — brain_requests already permanently stores the
-      // id; audit metadata stays minimal.
-      await recordAuditEvent(tx, {
-        adminUserId,
-        action: "brain.requested",
-        entityType: "brain_request",
-        entityId: "dashboard",
-        metadata: { requestType, requestSource, ...(resolved.relatedEntityType ? { relatedEntityType: resolved.relatedEntityType } : {}) },
-      });
-    });
-    return { errors: [`Daily Big Red Brain request limit (${DAILY_BRAIN_REQUEST_CAP}) reached for today. Try again tomorrow.`] };
+      return { errors: [`Daily Big Red Brain request limit (${rateLimitResult.limit}) reached for today. Try again tomorrow.`] };
+    }
+    return { errors: ["You're sending Big Red Brain requests too quickly. Please wait a few minutes and try again."] };
   }
 
   // --- Prompt assembly — the verified, minimal, server-built context is

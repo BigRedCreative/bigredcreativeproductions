@@ -81,12 +81,15 @@ export async function getGenerationJobById(id: string): Promise<GenerationJob | 
   return row ? mapRow(row) : undefined;
 }
 
-// Powers the daily generation cap — counts every ai_generation_jobs row
-// (completed or failed; a failed request still cost a provider call in
-// most cases) created since the start of the current UTC day. Mirrors
-// src/server/queries/brain.ts's countBrainRequestsToday() exactly,
-// including the "counts every admin combined, one shared daily counter"
-// rule.
+// Display-only as of Phase 21A-1C (powers the /admin/creative-studio
+// dashboard's "generations today" line) — no longer the authoritative
+// enforcement mechanism for the daily generation cap (that moved to
+// src/server/rate-limit.ts's rate_limit_events-backed "daily" tier for the
+// creative_studio_image scope, which is per-admin and rolling-24h rather
+// than this function's global-across-admins, calendar-day count). Counts
+// every ai_generation_jobs row (completed or failed) created since the
+// start of the current UTC day. Mirrors
+// src/server/queries/brain.ts's countBrainRequestsToday() exactly.
 export async function countImageGenerationsToday(): Promise<number> {
   const db = getDb();
   const startOfToday = new Date();

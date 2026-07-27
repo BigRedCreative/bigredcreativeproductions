@@ -9,14 +9,11 @@ import { buildAndValidateBrief, buildProviderPrompt } from "./brief";
 import type { RawCreativeBriefInput } from "./brief";
 import { resolveContextSource } from "./context";
 import { getEstimatedCostMicros, buildUsageMetadata } from "./cost";
-import { countImageGenerationsToday, countRecentGenerationsForBrief, hasReachedVariationCap } from "@/server/queries/creative-studio";
+import { countRecentGenerationsForBrief, hasReachedVariationCap } from "@/server/queries/creative-studio";
+import { checkCreativeStudioRateLimit } from "@/server/rate-limit";
 import type { ImageProvider } from "./providers/image-provider";
 import { ImageProviderError } from "./providers/image-provider";
-import {
-  isValidImageGenerationQuality,
-  DAILY_IMAGE_GENERATION_CAP,
-  IMAGE_SIZE_BY_ASPECT_RATIO,
-} from "@/data/creative-studio";
+import { isValidImageGenerationQuality, IMAGE_SIZE_BY_ASPECT_RATIO } from "@/data/creative-studio";
 import type {
   ImageGenerationErrorCategory,
   CreativeBrief,
@@ -103,18 +100,24 @@ export async function handleGenerateImage(
 
   const db = getDb();
 
-  // --- Cost guardrail 1: daily generation cap, shared across every admin
-  //     (mirrors DAILY_BRAIN_REQUEST_CAP's exact "one shared counter"
-  //     rule). A rejection here IS persisted (status:"failed",
+  // --- Rate limiting: BEFORE calling the provider, so a rejected
+  //     generation spends zero OpenAI credits. Checks both the
+  //     3-per-5-minute burst tier and the 10-per-rolling-24h-per-admin
+  //     daily tier in one call (see src/server/rate-limit.ts) — a
+  //     rejection from EITHER tier stops here. Only the DAILY tier's
+  //     rejection is persisted (status:"failed",
   //     errorCategory:"budget_exceeded") — the one validation failure
-  //     that gets its own permanent record, matching
-  //     handle-request.ts's identical precedent for the same reason: this
-  //     is a real, race-sensitive spend gate, not a plain input-shape
-  //     check. --------------------------------------------------------------
-  const generationsToday = await countImageGenerationsToday();
-  if (generationsToday >= DAILY_IMAGE_GENERATION_CAP) {
-    await writeFailedJob(db, adminUserId, provider, brief, context, size, quality, "budget_exceeded");
-    return { errors: [`Daily image generation limit (${DAILY_IMAGE_GENERATION_CAP}) reached for today. Try again tomorrow.`] };
+  //     that gets its own permanent record, matching this function's own
+  //     prior precedent; a BURST rejection is a pure transient-abuse
+  //     rejection and is not persisted, exactly like the variation-cap
+  //     rejection immediately below it. ------------------------------------
+  const rateLimitResult = await checkCreativeStudioRateLimit(adminUserId);
+  if (!rateLimitResult.allowed) {
+    if (rateLimitResult.tierId === "daily") {
+      await writeFailedJob(db, adminUserId, provider, brief, context, size, quality, "budget_exceeded");
+      return { errors: [`Daily image generation limit (${rateLimitResult.limit}) reached for today. Try again tomorrow.`] };
+    }
+    return { errors: ["You're generating images too quickly. Please wait a few minutes and try again."] };
   }
 
   // --- Cost guardrail 2: max variations per reviewed brief. A pure
