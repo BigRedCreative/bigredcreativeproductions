@@ -9,6 +9,60 @@ import type { NextConfig } from "next";
 // same one that appears in every public <img src> once media is uploaded.
 // Local /public images (logos, existing product/portfolio photos) are
 // completely unaffected — remotePatterns only applies to http(s) sources.
+const BLOB_HOST = "https://cgub3jazsflfunrr.public.blob.vercel-storage.com";
+
+// Phase 21A-2 — production security headers/CSP. Re-derived from a fresh
+// inspection of this app's actual browser resource needs immediately
+// before writing this (see CLAUDE.md "Security Headers (Phase 21A-2)" for
+// the full writeup), not assumed from the Phase 21A architecture review:
+//   - no next/font, no Google Fonts, no @font-face anywhere — no fonts src needed
+//   - zero <script> tags anywhere in source, zero analytics/CDN-shipped
+//     client packages in package.json — script-src stays 'self' only
+//   - exactly one external host, the Blob CDN above, used for both images
+//     and video — matches next.config.ts's own images.remotePatterns
+//   - zero <iframe> usage anywhere — frame-ancestors 'none' is safe
+//   - the one client-side fetch() (CheckoutView.tsx) targets "/api/orders",
+//     same-origin — connect-src 'self' is sufficient, no external API host
+//     is ever called from the browser
+//   - Google OAuth (src/app/admin/login/page.tsx) is a Server-Action-driven
+//     top-level redirect (signIn() inside a "use server" form action), never
+//     a popup/window.open — confirmed no window.open anywhere in source, so
+//     Cross-Origin-Opener-Policy: same-origin does not interfere with it
+//   - 22 files use React inline style={{}} — style-src needs 'unsafe-inline';
+//     no <style> block or CSS-in-JS library exists, so nothing beyond that
+// No new external host has been introduced anywhere in this codebase since
+// that review — confirmed by this fresh re-grep, not assumed.
+const CSP_DIRECTIVES = [
+  "default-src 'self'",
+  "script-src 'self' 'unsafe-inline'",
+  "style-src 'self' 'unsafe-inline'",
+  `img-src 'self' ${BLOB_HOST} data:`,
+  `media-src 'self' ${BLOB_HOST}`,
+  "connect-src 'self'",
+  "frame-ancestors 'none'",
+  "base-uri 'self'",
+  "form-action 'self'",
+].join("; ");
+
+const SECURITY_HEADERS = [
+  { key: "Content-Security-Policy", value: CSP_DIRECTIVES },
+  // 180 days, deliberately no `preload` — preload submission is a
+  // one-way, hard-to-reverse commitment to browsers' built-in HSTS
+  // preload lists, not something to opt into as a first production step.
+  { key: "Strict-Transport-Security", value: "max-age=15552000; includeSubDomains" },
+  { key: "X-Content-Type-Options", value: "nosniff" },
+  { key: "Referrer-Policy", value: "strict-origin-when-cross-origin" },
+  { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=(), payment=()" },
+  // Legacy defense alongside frame-ancestors above — modern browsers
+  // honor CSP's frame-ancestors and ignore this, but older/non-CSP-aware
+  // clients still respect it. DENY matches frame-ancestors 'none' exactly.
+  { key: "X-Frame-Options", value: "DENY" },
+  // Provisionally approved — see CLAUDE.md for the real-OAuth-flow
+  // reasoning (a top-level Server Action redirect, never a popup) and the
+  // manual-acceptance requirement before this is considered fully proven.
+  { key: "Cross-Origin-Opener-Policy", value: "same-origin" },
+];
+
 const nextConfig: NextConfig = {
   images: {
     remotePatterns: [
@@ -32,6 +86,18 @@ const nextConfig: NextConfig = {
     serverActions: {
       bodySizeLimit: "9mb",
     },
+  },
+  // Applied centrally, to every route, rather than per-route-group — this
+  // app has no route whose actual external-resource needs differ from any
+  // other (the Blob CDN is used by both public pages and the admin Media
+  // Library; nothing else calls out to any other external host anywhere).
+  async headers() {
+    return [
+      {
+        source: "/:path*",
+        headers: SECURITY_HEADERS,
+      },
+    ];
   },
 };
 
