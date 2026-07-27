@@ -192,3 +192,21 @@ export function isValidImageGenerationStatus(value: string): value is ImageGener
 export function isValidImageGenerationErrorCategory(value: string): value is ImageGenerationErrorCategory {
   return (IMAGE_GENERATION_ERROR_CATEGORIES as readonly string[]).includes(value);
 }
+
+// --- Phase 20C-2 additions -------------------------------------------------
+
+// Save-time filename/alt/caption bounds. The filename bound is deliberately
+// short — this becomes a slugified base name, not free prose (see
+// src/server/sanitize-filename.ts). Alt/caption mirror the same order of
+// magnitude as every other admin-authored alt/caption field in this
+// codebase (media_assets.alt/.caption have no DB-level length constraint,
+// so these are the application-level bound, enforced at the one NEW write
+// path this phase adds — the pre-existing updateMediaAssetAction path is
+// unmodified and out of scope here).
+export const MAX_FILENAME_LENGTH = 80;
+export const MAX_SAVE_ALT_LENGTH = 200;
+export const MAX_SAVE_CAPTION_LENGTH = 300;
+
+// Generation History list page size — mirrors MEDIA_ASSETS_PAGE_SIZE's
+// exact "flat, real-scale-adequate" reasoning.
+export const GENERATION_JOBS_PAGE_SIZE = 25;

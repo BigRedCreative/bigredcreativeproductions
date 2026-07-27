@@ -48,3 +48,15 @@ export function parseContextSource(formData: FormData): { contextSourceType: str
     contextSourceId: getNullableString(formData, "contextSourceId"),
   };
 }
+
+// Phase 20C-2 — the owner-reviewed filename/alt/caption submitted
+// alongside a Save to Media Library click. Shape parsing only; every
+// value is re-sanitized/bounded server-side in save-discard.ts regardless
+// of what's submitted here.
+export function parseSaveMetadata(formData: FormData): { filename?: string; alt?: string; caption?: string } {
+  return {
+    filename: getString(formData, "filename") || undefined,
+    alt: getString(formData, "alt") || undefined,
+    caption: getString(formData, "caption") || undefined,
+  };
+}

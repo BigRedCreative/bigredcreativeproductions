@@ -1,5 +1,5 @@
 import "server-only";
-import { and, count, eq, gte, sql } from "drizzle-orm";
+import { and, count, desc, eq, gte, sql } from "drizzle-orm";
 import { getDb } from "@/db";
 import { aiGenerationJobs } from "@/db/schema";
 import type {
@@ -14,7 +14,7 @@ import type {
   ImageGenerationErrorCategory,
   ImageGenerationUsageMetadata,
 } from "@/data/creative-studio";
-import { MAX_VARIATIONS_PER_BRIEF } from "@/data/creative-studio";
+import { MAX_VARIATIONS_PER_BRIEF, GENERATION_JOBS_PAGE_SIZE } from "@/data/creative-studio";
 
 // The ONE place anything in the app reads an ai_generation_jobs row from
 // Neon. Server-only, zero insert/update/delete calls — mirrors the exact
@@ -189,4 +189,107 @@ export async function findGenerationByOutputMediaAssetId(mediaAssetId: string): 
     model: row.model as ImageGenerationModel,
     createdAt: row.createdAt,
   };
+}
+
+// ---------------------------------------------------------------------
+// Phase 20C-2 — Generation History. A plain, paginated, newest-first list
+// — mirrors listMediaAssets()'s exact shape/pagination convention. Every
+// field here already exists on ai_generation_jobs; no migration was
+// needed to build this (see CLAUDE.md's Phase 20C-2 architecture report).
+// ---------------------------------------------------------------------
+
+export type GenerationJobListRow = {
+  id: string;
+  taskPreset: CreativeTaskPreset;
+  provider: ImageGenerationProvider;
+  model: ImageGenerationModel;
+  requestedSize: ImageGenerationSize;
+  requestedQuality: ImageGenerationQuality;
+  status: ImageGenerationStatus;
+  outputUrl: string | null;
+  outputMediaAssetId: string | null;
+  discardedAt: Date | null;
+  createdAt: Date;
+  actualCostMicros: number | null;
+};
+
+export type ListGenerationJobsResult = {
+  rows: GenerationJobListRow[];
+  totalCount: number;
+  page: number;
+  pageCount: number;
+};
+
+export async function listGenerationJobsForAdmin(page: number): Promise<ListGenerationJobsResult> {
+  const db = getDb();
+  const safePage = Math.max(1, page);
+  const offset = (safePage - 1) * GENERATION_JOBS_PAGE_SIZE;
+
+  const [rows, totalResult] = await Promise.all([
+    db
+      .select({
+        id: aiGenerationJobs.id,
+        taskPreset: aiGenerationJobs.taskPreset,
+        provider: aiGenerationJobs.provider,
+        model: aiGenerationJobs.model,
+        requestedSize: aiGenerationJobs.requestedSize,
+        requestedQuality: aiGenerationJobs.requestedQuality,
+        status: aiGenerationJobs.status,
+        outputUrl: aiGenerationJobs.outputUrl,
+        outputMediaAssetId: aiGenerationJobs.outputMediaAssetId,
+        discardedAt: aiGenerationJobs.discardedAt,
+        createdAt: aiGenerationJobs.createdAt,
+        usageMetadata: aiGenerationJobs.usageMetadata,
+      })
+      .from(aiGenerationJobs)
+      .orderBy(desc(aiGenerationJobs.createdAt))
+      .limit(GENERATION_JOBS_PAGE_SIZE)
+      .offset(offset),
+    db.select({ value: count() }).from(aiGenerationJobs),
+  ]);
+
+  const totalCount = totalResult[0]?.value ?? 0;
+
+  return {
+    rows: rows.map((row) => {
+      const usage = row.usageMetadata as ImageGenerationUsageMetadata | null;
+      return {
+        id: row.id,
+        taskPreset: row.taskPreset as CreativeTaskPreset,
+        provider: row.provider as ImageGenerationProvider,
+        model: row.model as ImageGenerationModel,
+        requestedSize: row.requestedSize as ImageGenerationSize,
+        requestedQuality: row.requestedQuality as ImageGenerationQuality,
+        status: row.status as ImageGenerationStatus,
+        outputUrl: row.outputUrl,
+        outputMediaAssetId: row.outputMediaAssetId,
+        discardedAt: row.discardedAt,
+        createdAt: row.createdAt,
+        actualCostMicros: usage?.actualCostMicros ?? null,
+      };
+    }),
+    totalCount,
+    page: safePage,
+    pageCount: Math.max(1, Math.ceil(totalCount / GENERATION_JOBS_PAGE_SIZE)),
+  };
+}
+
+// Powers the cost dashboard's "spend today" line — a one-line variant of
+// getMonthlyImageCostMicrosSoFar() swapping the truncation unit, same
+// exact integer-microdollar discipline, no new table/column.
+export async function getTodayImageCostMicrosSoFar(): Promise<number> {
+  const db = getDb();
+  const startOfToday = new Date();
+  startOfToday.setUTCHours(0, 0, 0, 0);
+
+  const rows = await db
+    .select({ usageMetadata: aiGenerationJobs.usageMetadata })
+    .from(aiGenerationJobs)
+    .where(and(gte(aiGenerationJobs.createdAt, startOfToday), eq(aiGenerationJobs.status, "completed")));
+
+  return rows.reduce((sum, row) => {
+    const usage = row.usageMetadata as ImageGenerationUsageMetadata | null;
+    const micros = usage?.actualCostMicros ?? usage?.estimatedCostMicros ?? 0;
+    return sum + micros;
+  }, 0);
 }

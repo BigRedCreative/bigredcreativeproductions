@@ -4,10 +4,10 @@ import { revalidatePath } from "next/cache";
 import { getDb } from "@/db";
 import { requireAdminUser } from "@/server/require-admin-user";
 import { recordAuditEvent } from "@/server/audit-log";
-import { parseRawCreativeBriefInput, parseQuality, parseContextSource } from "@/server/build-creative-studio-form";
+import { parseRawCreativeBriefInput, parseQuality, parseContextSource, parseSaveMetadata } from "@/server/build-creative-studio-form";
 import { buildAndValidateBrief } from "@/server/creative-studio/brief";
 import { handleGenerateImage } from "@/server/creative-studio/generate-image";
-import { handleSaveToMediaLibrary, handleDiscardGeneration } from "@/server/creative-studio/save-discard";
+import { handleSaveToMediaLibrary, handleDiscardGeneration, handleRestoreGeneration } from "@/server/creative-studio/save-discard";
 import { getConfiguredImageProvider } from "@/server/creative-studio/providers/registry";
 import { getEstimatedCostMicros } from "@/server/creative-studio/cost";
 import { isValidImageGenerationQuality, IMAGE_SIZE_BY_ASPECT_RATIO } from "@/data/creative-studio";
@@ -82,16 +82,17 @@ export type SaveToMediaState = { errors: string[] } | { success: true; mediaAsse
 
 export async function saveToMediaLibraryAction(
   jobId: string,
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   _prevState: SaveToMediaState,
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  _formData: FormData,
+  formData: FormData,
 ): Promise<SaveToMediaState> {
   const adminUser = await requireAdminUser();
-  const result = await handleSaveToMediaLibrary(adminUser.id, jobId);
+  const metadata = parseSaveMetadata(formData);
+  const result = await handleSaveToMediaLibrary(adminUser.id, jobId, metadata);
   if ("success" in result) {
     revalidatePath("/admin/media");
     revalidatePath(`/admin/media/${result.mediaAssetId}`);
+    revalidatePath("/admin/creative-studio/history");
+    revalidatePath(`/admin/creative-studio/${jobId}`);
   }
   return result;
 }
@@ -106,5 +107,28 @@ export async function discardGenerationAction(
   _formData: FormData,
 ): Promise<DiscardState> {
   const adminUser = await requireAdminUser();
-  return handleDiscardGeneration(adminUser.id, jobId);
+  const result = await handleDiscardGeneration(adminUser.id, jobId);
+  if ("success" in result) {
+    revalidatePath("/admin/creative-studio/history");
+    revalidatePath(`/admin/creative-studio/${jobId}`);
+  }
+  return result;
+}
+
+export type RestoreState = { errors: string[] } | { success: true } | null;
+
+export async function restoreGenerationAction(
+  jobId: string,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  _prevState: RestoreState,
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
+  _formData: FormData,
+): Promise<RestoreState> {
+  const adminUser = await requireAdminUser();
+  const result = await handleRestoreGeneration(adminUser.id, jobId);
+  if ("success" in result) {
+    revalidatePath("/admin/creative-studio/history");
+    revalidatePath(`/admin/creative-studio/${jobId}`);
+  }
+  return result;
 }
