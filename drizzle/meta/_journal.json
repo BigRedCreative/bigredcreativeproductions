@@ -120,6 +120,13 @@
       "when": 1785119402647,
       "tag": "0016_panoramic_thor_girl",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1785158894591,
+      "tag": "0017_worthless_steel_serpent",
+      "breakpoints": true
     }
   ]
 }
