@@ -271,6 +271,31 @@ export const orders = pgTable(
     // schema's standing "don't duplicate history a different table
     // already owns" convention.
     paymentFailedAt: timestamp("payment_failed_at", { withTimezone: true }),
+    // Phase 21C-2B-0 — the payment capability token, added ahead of any
+    // real PaymentIntent-creation code (that's Phase 21C-2B proper,
+    // separately approved and not started). See CLAUDE.md "Payment
+    // Capability Token (Phase 21C-2B-0)" for the full design.
+    //
+    // Deliberately NOT clientRequestId — clientRequestId remains
+    // exclusively order-creation idempotency; reusing it as a payment-
+    // authorization secret would conflate two different concerns with two
+    // different trust boundaries. This column is a SEPARATE, purpose-
+    // built capability: whoever presents the matching raw token (never
+    // stored here — only its SHA-256 hash is) is authorized to initialize/
+    // resume payment for THIS order, and nothing else — not line changes,
+    // not customer-info changes, not cancellation, not refunds, not
+    // paymentStatus changes directly.
+    //
+    // Only ever populated for a payment-eligible checkout order (a future,
+    // separately-approved order-creation change — not wired in this
+    // phase). Every existing order, including the real BRCP-1013 (a
+    // manual, non-payment-eligible order) and every order created between
+    // now and that future change, reads NULL here.
+    paymentAccessTokenHash: text("payment_access_token_hash"),
+    // Nullable, paired with the hash above — a token with no expiry is
+    // never considered valid (src/server/payments/access-token.ts's
+    // verification helper requires both fields to be non-null AND unexpired).
+    paymentAccessTokenExpiresAt: timestamp("payment_access_token_expires_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
