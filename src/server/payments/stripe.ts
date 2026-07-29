@@ -181,3 +181,27 @@ export class StripePaymentProvider implements PaymentProvider {
     }
   }
 }
+
+// Phase 21C-2D — signed webhook verification. Kept in this file (the one
+// place `stripe` is imported) rather than in the webhook route or handler,
+// so those stay free of any direct Stripe SDK dependency and remain fully
+// testable with synthetic Stripe.Event objects. Reuses getClient()'s own
+// sk_test_-only guard on purpose: signature verification is pure local HMAC
+// computation and technically needs no configured secret key at all, but
+// gating it behind the same test-mode check keeps webhook processing tied
+// to the identical "is Stripe genuinely configured for this TEST-MODE-ONLY
+// phase" gate every other payment code path already uses, rather than
+// introducing a second, independent notion of "configured."
+export async function verifyWebhookSignature(
+  rawBody: string,
+  signatureHeader: string,
+  webhookSecret: string,
+): Promise<Stripe.Event> {
+  const client = getClient();
+  // constructEventAsync performs pure local HMAC verification — no network
+  // call to Stripe is made. Throws Stripe.errors.StripeSignatureVerification-
+  // Error (or a generic error) on any failure; the caller (the webhook
+  // route) is responsible for catching this and never logging rawBody,
+  // signatureHeader, webhookSecret, or the thrown error's own message.
+  return client.webhooks.constructEventAsync(rawBody, signatureHeader, webhookSecret);
+}
