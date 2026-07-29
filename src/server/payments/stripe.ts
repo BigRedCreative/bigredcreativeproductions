@@ -130,7 +130,21 @@ export class StripePaymentProvider implements PaymentProvider {
         {
           amount: request.amountCents,
           currency: request.currency,
-          automatic_payment_methods: { enabled: true },
+          // Phase 21C-2C — explicit, closed payment-method list, replacing
+          // the earlier automatic_payment_methods config. Card-only is a
+          // deliberate choice, not a placeholder: it avoids the Permissions-
+          // Policy "payment" conflict (Apple Pay/Google Pay/the Payment
+          // Request API all require it; this app's payment=() stays
+          // untouched — see CLAUDE.md "Stripe Payment UI (Phase 21C-2C)"),
+          // avoids redirect-based payment methods (so return_url is a
+          // required-but-effectively-unused parameter, never a real
+          // navigation in practice), and matches this codebase's standing
+          // preference for a code-owned closed list over Stripe-Dashboard-
+          // configurable behavior (the same reasoning behind
+          // PURCHASE_MODES/PRODUCT_CATEGORIES/every other closed enum here).
+          // Wallets/additional methods are a deliberately later, separately
+          // scoped and separately CSP-reviewed expansion.
+          payment_method_types: ["card"],
           // Minimal, non-PII metadata only — matches the approved design
           // exactly: an internal reconciliation aid for the Stripe
           // Dashboard, never customer name/email/phone/notes.
