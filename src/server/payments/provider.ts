@@ -1,34 +1,32 @@
 import "server-only";
 
-// Phase 21C-2A — the interface a future payment-collection call would go
-// through. Deliberately narrower than TextProvider/ImageProvider
+// Phase 21C-2A — the interface a payment-collection call goes through.
+// Deliberately narrower than TextProvider/ImageProvider
 // (src/server/brain/providers/text-provider.ts,
 // src/server/creative-studio/providers/image-provider.ts) — those exist
 // because Big Red Brain/Creative Studio needed a real provider SELECTION
 // concept (which model, which provider) from day one. Payments do not:
 // there is exactly one real-world target (a card-payment processor), no
-// "modelName" concept applies, and no registry/selection function is
-// created here — see the module-level note at the bottom of this file for
-// why a registry is deliberately deferred to Phase 21C-2B rather than
-// added now "for symmetry."
+// "modelName" concept applies.
 //
-// NO CONCRETE IMPLEMENTATION EXISTS YET. Nothing in this codebase imports
-// the `stripe` package (it is not installed), and nothing calls any
-// method described here. This file exists purely so Phase 21C-2B has a
-// reviewed, stable contract to implement against — see CLAUDE.md "Payment
-// Schema + Provider Abstraction (Phase 21C-2A)" for the full writeup.
+// Phase 21C-2B adds the first concrete implementation
+// (src/server/payments/stripe.ts) and a registry
+// (src/server/payments/registry.ts). See CLAUDE.md "Payment Schema +
+// Provider Abstraction (Phase 21C-2A)" and "Stripe PaymentIntent Creation
+// (Phase 21C-2B)" for the full writeup.
 
 // Small, closed vocabulary — intentionally not shared with any admin UI
 // component (unlike BrainErrorCategory/ImageGenerationErrorCategory,
 // which drive real dropdowns elsewhere), so it lives here rather than in
-// a shared src/data/ file. Kept minimal on purpose: a real implementation
-// (21C-2B) may find it needs to refine this after actually mapping a real
-// SDK's error shapes onto it — this is a first-pass contract, not a
-// finished taxonomy.
+// a shared src/data/ file.
 export type PaymentProviderErrorCategory =
   | "invalid_request" // the caller supplied something the provider itself rejects as malformed (never a card/customer error)
   | "provider_unavailable" // the provider's API could not be reached / returned a server-side error
-  | "idempotency_conflict"; // a genuine, unexpected conflict on the provider's own idempotency key
+  | "idempotency_conflict" // a genuine, unexpected conflict on the provider's own idempotency key
+  | "provider_rate_limited"; // Phase 21C-2B — the PROVIDER is throttling US (Stripe's own rate limit), a
+  // meaningfully different condition from "provider_unavailable" (Stripe down/unreachable) even
+  // though both currently map to the same safe customer-facing message — kept distinct so a future
+  // backoff/retry strategy can treat them differently without another interface change.
 
 // Thrown by any PaymentProvider implementation on failure — mirrors
 // TextProviderError/ImageProviderError's exact shape (a typed Error
@@ -68,37 +66,43 @@ export class PaymentProviderError extends Error {
 //     established.
 export type CreatePaymentIntentRequest = {
   orderId: string;
+  // Included only for provider-side metadata (e.g. Stripe Dashboard
+  // reconciliation) — never used for authorization, never trusted as a
+  // lookup key. Not PII.
+  orderNumber: string;
   amountCents: number;
   currency: "usd";
   idempotencyKey: string;
 };
 
 // Normalized, provider-agnostic result shape — never a raw SDK object.
-// providerPaymentIntentId is what a future implementation would persist
-// onto orders.stripePaymentIntentId; clientSecret is the one value a
-// future frontend needs to hand to a client-side payment SDK, and must
-// never be logged or written to audit_log (it is short-lived and
-// effectively a bearer credential for completing that one payment).
+// providerPaymentIntentId is what a caller persists onto
+// orders.stripePaymentIntentId; clientSecret is the one value a future
+// frontend needs to hand to a client-side payment SDK, and must never be
+// logged or written to audit_log (it is short-lived and effectively a
+// bearer credential for completing that one payment). livemode — Phase
+// 21C-2B — is the SECOND, independent layer of the test-mode-only
+// guard: even though the concrete Stripe provider already refuses to
+// construct a client for anything but a test-mode secret key, every
+// caller independently re-checks the value Stripe itself reports on the
+// actual returned object, never trusting the key-prefix check alone.
 export type CreatePaymentIntentResult = {
   provider: string;
   providerPaymentIntentId: string;
   clientSecret: string;
   status: string;
+  livemode: boolean;
 };
 
 export interface PaymentProvider {
   readonly providerName: string;
   createPaymentIntent(request: CreatePaymentIntentRequest): Promise<CreatePaymentIntentResult>;
+  // Phase 21C-2B — returns null specifically and only when the provider
+  // confirms the referenced PaymentIntent does not exist (Stripe's own
+  // "no such payment_intent" case) — an expected, non-exceptional outcome
+  // the caller must branch on explicitly (see CLAUDE.md's Case 5 /
+  // "missing provider reference" design), not something folded into the
+  // PaymentProviderError category system. Any other failure (network,
+  // auth, rate limit, etc.) still throws PaymentProviderError as usual.
+  retrievePaymentIntent(providerPaymentIntentId: string): Promise<CreatePaymentIntentResult | null>;
 }
-
-// No registry file (e.g. a getConfiguredPaymentProvider()) exists in this
-// phase, unlike TextProvider/ImageProvider's own registry.ts files.
-// Those registries exist to make a real, already-implemented concrete
-// provider selectable purely from server config. Since NO concrete
-// PaymentProvider implementation exists yet — creating one now would mean
-// either (a) a registry function with nothing real to return, or (b) a
-// registry that silently imports/constructs a real Stripe client ahead of
-// approval, exactly what Phase 21C-2A's scope explicitly prohibits.
-// Symmetry with the Brain/Creative Studio pattern is deliberately not
-// pursued for its own sake here — the registry is Phase 21C-2B's first
-// deliverable, once a concrete implementation actually exists to select.
