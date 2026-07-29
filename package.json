@@ -13,6 +13,8 @@
   },
   "dependencies": {
     "@neondatabase/serverless": "^1.1.0",
+    "@stripe/react-stripe-js": "6.8.0",
+    "@stripe/stripe-js": "9.12.1",
     "@vercel/blob": "^2.6.1",
     "drizzle-orm": "^0.45.2",
     "image-size": "^2.0.2",

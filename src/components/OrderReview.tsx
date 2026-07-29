@@ -3,13 +3,23 @@ import { formatMoney } from "@/data/money";
 
 type OrderReviewProps = {
   draft: OrderDraft;
+  // Phase 21C-2C — suppresses the "No payment is being collected at this
+  // step." / "...no payment is being collected." note below the pricing
+  // summary. Both of those are only true BEFORE a payment attempt exists;
+  // CheckoutView.tsx's payment-confirmed screen passes this once Stripe's
+  // confirmPayment() has resolved, since restating "no payment is being
+  // collected" directly beneath "Payment submitted..." would be stale and
+  // self-contradictory. Every other caller (the review step, and the
+  // pre-existing non-Stripe "submitted" screen) omits this prop entirely,
+  // so their behavior is byte-for-byte unchanged.
+  hidePaymentNote?: boolean;
 };
 
 // Presentational only — renders exclusively from the frozen OrderLine
 // snapshots on `draft`, never from a live Product lookup. Deliberately not
 // a reuse of CartItemRow, which carries live quantity/remove controls
 // wired to useCart() that have no place in a historical review.
-export default function OrderReview({ draft }: OrderReviewProps) {
+export default function OrderReview({ draft, hidePaymentNote = false }: OrderReviewProps) {
   const { pricingSummary } = draft;
 
   return (
@@ -74,14 +84,15 @@ export default function OrderReview({ draft }: OrderReviewProps) {
             <span>{formatMoney(pricingSummary.depositDue)}</span>
           </div>
         )}
-        {pricingSummary.hasEstimatedPricing ? (
-          <p className="cart-summary-note">
-            Some items are starting prices. Final price subject to confirmation — no payment is being
-            collected.
-          </p>
-        ) : (
-          <p className="cart-summary-note">No payment is being collected at this step.</p>
-        )}
+        {!hidePaymentNote &&
+          (pricingSummary.hasEstimatedPricing ? (
+            <p className="cart-summary-note">
+              Some items are starting prices. Final price subject to confirmation — no payment is being
+              collected.
+            </p>
+          ) : (
+            <p className="cart-summary-note">No payment is being collected at this step.</p>
+          ))}
       </div>
     </div>
   );

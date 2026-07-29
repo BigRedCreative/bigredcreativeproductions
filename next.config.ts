@@ -32,13 +32,40 @@ const BLOB_HOST = "https://cgub3jazsflfunrr.public.blob.vercel-storage.com";
 //     no <style> block or CSS-in-JS library exists, so nothing beyond that
 // No new external host has been introduced anywhere in this codebase since
 // that review — confirmed by this fresh re-grep, not assumed.
+// Phase 21C-2C — Stripe Payment Element additions, sourced directly from
+// Stripe's own current official security guide (docs.stripe.com/security/
+// guide) at implementation time, not assumed. Every addition is an exact
+// Stripe-owned hostname — no wildcards beyond Stripe's own documented
+// "*.js.stripe.com". Stripe's guide states this exists so "Stripe.js [can]
+// improve performance by starting frames on different origins, where
+// possible" — a real Stripe-side optimization, not a wildcard this app
+// introduced for its own convenience. Real browser acceptance testing
+// (headless Chrome, full network capture) confirmed every resource in that
+// session — script, controller iframe, every Elements sub-frame — actually
+// loaded from the exact origin "js.stripe.com", never a genuine subdomain;
+// the wildcard was NOT exercised in that one session, but is kept anyway
+// per Stripe's own documented reasoning, since a single session can't rule
+// out Stripe's own infrastructure using a subdomain under different
+// conditions (network/rollout/A-B). frame-ancestors/object-src/base-uri/
+// form-action are untouched; Permissions-Policy's payment=() below is also
+// deliberately untouched — see CLAUDE.md "Stripe Payment UI (Phase 21C-2C)"
+// for why (this phase is scoped to card-only, so no wallet/Payment-Request-
+// API capability is needed, and relaxing payment=() was explicitly avoided).
+const STRIPE_JS_HOSTS = "https://js.stripe.com https://*.js.stripe.com";
+
 const CSP_DIRECTIVES = [
   "default-src 'self'",
-  "script-src 'self' 'unsafe-inline'",
+  `script-src 'self' 'unsafe-inline' ${STRIPE_JS_HOSTS}`,
   "style-src 'self' 'unsafe-inline'",
-  `img-src 'self' ${BLOB_HOST} data:`,
+  `img-src 'self' ${BLOB_HOST} https://*.stripe.com data:`,
   `media-src 'self' ${BLOB_HOST}`,
-  "connect-src 'self'",
+  `connect-src 'self' https://api.stripe.com`,
+  // New directive — previously absent, which meant it fell back to
+  // default-src 'self' and would have blocked Stripe's iframe entirely.
+  // hooks.stripe.com covers redirect-based payment-method authentication
+  // frames; not otherwise expected to be reached given the card-only
+  // configuration (see stripe.ts), but included per Stripe's own guidance.
+  `frame-src ${STRIPE_JS_HOSTS} https://hooks.stripe.com`,
   "frame-ancestors 'none'",
   "base-uri 'self'",
   "form-action 'self'",
