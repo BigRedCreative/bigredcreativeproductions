@@ -6,9 +6,17 @@ import { buildOrderDraft } from "@/data/orders";
 import type { OrderCustomer } from "@/data/orders";
 import type { CartItem } from "@/data/cart";
 import { recordAuditEvent } from "@/server/audit-log";
+import { issueOrRotatePaymentAccessToken } from "@/server/payments/issue-token";
 
 export type CreateOrderResult =
-  | { ok: true; id: string; orderNumber: string; status: string }
+  // Phase 21C-2B — paymentAccessToken is present ONLY when this specific
+  // response corresponds to a payment-eligible order (see
+  // src/server/payments/eligibility.ts); absent (never null, never an
+  // empty string) for every non-eligible order. See src/app/api/orders/
+  // route.ts for how this becomes the public response's own optional
+  // field. The raw value is never persisted anywhere — only its SHA-256
+  // hash is (src/server/payments/issue-token.ts).
+  | { ok: true; id: string; orderNumber: string; status: string; paymentAccessToken?: string }
   | { ok: false; error: string };
 
 // The single place Customer + Order + OrderLine rows are created. Runs as
@@ -39,7 +47,17 @@ export async function createOrder(
       where: eq(orders.clientRequestId, clientRequestId),
     });
     if (existing) {
-      return { ok: true, id: existing.id, orderNumber: existing.orderNumber, status: existing.status };
+      // Phase 21C-2B — an idempotent retry of order creation is also the
+      // approved token-rotation trigger (see CLAUDE.md "Payment
+      // Capability Foundation" → "Token rotation"). This is a fresh,
+      // top-level statement, outside any transaction opened above (there
+      // isn't one on this fast path) — issueOrRotatePaymentAccessToken's
+      // own single UPDATE is its own implicit transaction, which is fine:
+      // rotating a token is a pure, local, no-external-call operation
+      // with nothing else that needs to commit alongside it atomically.
+      const existingLines = await db.query.orderLines.findMany({ where: eq(orderLines.orderId, existing.id) });
+      const paymentAccessToken = await issueOrRotatePaymentAccessToken(db, existing, existingLines);
+      return { ok: true, id: existing.id, orderNumber: existing.orderNumber, status: existing.status, paymentAccessToken };
     }
 
     const draft = buildOrderDraft(verifiedItems, customer, notes ?? "");
@@ -172,7 +190,15 @@ export async function createOrder(
           // silently paper over.
           throw new Error("Order insert conflicted on orders_client_request_id_unique but no row was found on re-query.");
         }
-        return { ok: true as const, id: raced.id, orderNumber: raced.orderNumber, status: raced.status };
+        // Phase 21C-2B — same rotation trigger as the fast-path retry
+        // above, reached here specifically when a genuinely concurrent
+        // request lost the orders_client_request_id_unique race. Still
+        // inside the same, still-healthy transaction (tx), so this
+        // commits atomically with everything else the winning request
+        // already wrote.
+        const racedLines = await tx.query.orderLines.findMany({ where: eq(orderLines.orderId, raced.id) });
+        const racedToken = await issueOrRotatePaymentAccessToken(tx, raced, racedLines);
+        return { ok: true as const, id: raced.id, orderNumber: raced.orderNumber, status: raced.status, paymentAccessToken: racedToken };
       }
 
       if (draft.lines.length > 0) {
@@ -219,11 +245,18 @@ export async function createOrder(
         metadata: { orderNumber: insertedOrder.orderNumber, source: "checkout", lineCount: draft.lines.length },
       });
 
+      // Phase 21C-2B — the fresh-creation issuance path. draft.lines
+      // already has purchaseMode for every line, so no extra query is
+      // needed here (unlike the two recovery branches above, which only
+      // have the bare order row and must fetch order_lines separately).
+      const paymentAccessToken = await issueOrRotatePaymentAccessToken(tx, insertedOrder, draft.lines);
+
       return {
         ok: true as const,
         id: insertedOrder.id,
         orderNumber: insertedOrder.orderNumber,
         status: insertedOrder.status,
+        paymentAccessToken,
       };
     });
   } catch (error) {

@@ -26,6 +26,7 @@ export const RATE_LIMIT_SCOPES = [
   "video_upload_token_admin",
   "video_upload_token_ip",
   "order_creation_ip",
+  "payment_initiation_ip",
 ] as const;
 export type RateLimitScope = (typeof RATE_LIMIT_SCOPES)[number];
 
@@ -171,6 +172,18 @@ const RATE_LIMIT_TIERS: Record<RateLimitScope, readonly RateLimitTier[]> = {
   order_creation_ip: [
     { tierId: "burst", limit: 5, windowMs: FIVE_MINUTES_MS },
     { tierId: "hourly", limit: 10, windowMs: ONE_HOUR_MS },
+  ],
+  // Phase 21C-2B — POST /api/orders/[id]/payment-intent's own rate limit.
+  // A genuinely different abuse surface from order_creation_ip: this
+  // route is only reachable after an order already exists, and its
+  // realistic abuse pattern (card-testing-style volumetric hammering, or
+  // a broken client retry-looping) warrants a slightly more permissive
+  // hourly ceiling than order creation's own 10/hr — a legitimate
+  // customer retrying a declined card a few times within an hour is a
+  // completely normal, non-abusive pattern. IP-only, same HMAC keying.
+  payment_initiation_ip: [
+    { tierId: "burst", limit: 5, windowMs: FIVE_MINUTES_MS },
+    { tierId: "hourly", limit: 15, windowMs: ONE_HOUR_MS },
   ],
 };
 
@@ -414,4 +427,24 @@ export async function checkOrderCreationRateLimit(rawIp: string | null): Promise
   }
 
   return checkAndRecordRateLimit([{ scope: "order_creation_ip", key: ipKey }]);
+}
+
+// Phase 21C-2B — POST /api/orders/[id]/payment-intent's own rate limit.
+// Same shape and same fail-closed-on-AUTH_SECRET-unavailable contract as
+// checkOrderCreationRateLimit above — the caller (the future payment-intent
+// route) is responsible for catching a thrown error here and turning it
+// into a controlled 503, never a false "allowed".
+export async function checkPaymentInitiationRateLimit(rawIp: string | null): Promise<RateLimitResult> {
+  let ipKey: string;
+  if (rawIp === null) {
+    ipKey = UNKNOWN_IP_SENTINEL;
+  } else {
+    const hashed = hashIpForRateLimit(rawIp);
+    if (hashed === null) {
+      throw new Error("Rate limiter: AUTH_SECRET unavailable for payment-initiation IP check.");
+    }
+    ipKey = hashed;
+  }
+
+  return checkAndRecordRateLimit([{ scope: "payment_initiation_ip", key: ipKey }]);
 }

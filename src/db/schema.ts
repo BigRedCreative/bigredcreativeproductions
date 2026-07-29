@@ -271,6 +271,27 @@ export const orders = pgTable(
     // schema's standing "don't duplicate history a different table
     // already owns" convention.
     paymentFailedAt: timestamp("payment_failed_at", { withTimezone: true }),
+    // Phase 21C-2B (reconciliation-timestamp foundation) — the timestamp of
+    // the FIRST actual attempt to create a Stripe PaymentIntent for this
+    // order. Deliberately NOT order-creation time, payment-completion time,
+    // latest-retry time, or webhook time — a customer may create an order
+    // and not attempt payment until hours later, so orders.createdAt is
+    // not a safe anchor for reasoning about Stripe idempotency-key
+    // retention (Stripe guarantees a key is honored for "at least 24
+    // hours" from when it was first used, not from order creation). Once
+    // set, ordinary retries do NOT reset it — a future payment-intent
+    // endpoint (Phase 21C-2B proper, not built yet) sets this exactly
+    // once, atomically, immediately before the first real provider
+    // create() call, and never touches it again. See CLAUDE.md "Payment
+    // Reconciliation Timestamp (Phase 21C-2B)" for the full future
+    // algorithm this column supports (case-by-case: fresh attempt allowed
+    // when null; same deterministic idempotency key safely reusable while
+    // under 24h old; fail closed, no replacement PaymentIntent, no
+    // paymentStatus change, once 24h or older). Nullable, no default —
+    // every existing order, including BRCP-1013, reads NULL, and will
+    // continue to for as long as nothing calls the future PaymentIntent-
+    // creation code path, which does not exist yet.
+    stripePaymentIntentAttemptedAt: timestamp("stripe_payment_intent_attempted_at", { withTimezone: true }),
     // Phase 21C-2B-0 — the payment capability token, added ahead of any
     // real PaymentIntent-creation code (that's Phase 21C-2B proper,
     // separately approved and not started). See CLAUDE.md "Payment

@@ -150,8 +150,23 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: result.error }, { status: 500 });
   }
 
+  // Phase 21C-2B — additive response field. Present only for a
+  // payment-eligible order (see src/server/payments/eligibility.ts);
+  // completely ABSENT — never null, never an empty string — for every
+  // other order, a deliberate, single consistent shape rather than
+  // sometimes-present/sometimes-null. No amount, currency, or any other
+  // payment-provider data is ever included here; a future, separately-
+  // approved payment-intent endpoint is the only place that data can
+  // originate. CheckoutView.tsx does not read this field yet (Phase
+  // 21C-2C's concern, not this one's) — its addition here is a pure,
+  // backward-compatible API-contract change.
   return NextResponse.json(
-    { id: result.id, orderNumber: result.orderNumber, status: result.status },
+    {
+      id: result.id,
+      orderNumber: result.orderNumber,
+      status: result.status,
+      ...(result.paymentAccessToken ? { paymentAccessToken: result.paymentAccessToken } : {}),
+    },
     { status: 201 },
   );
 }
