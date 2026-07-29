@@ -134,6 +134,13 @@ export type OrderDetail = {
   orderNumber: string;
   status: string;
   paymentStatus: string;
+  // Phase 21C-2D — exposed so the admin UI/server action can tell a
+  // Stripe-linked order apart from a manual/off-platform one and lock out
+  // manual paymentStatus edits accordingly (see OrderPaymentStatusForm.tsx
+  // and mutate-order.ts's setOrderPaymentStatusAction). Null for every
+  // manual order and for a Stripe-eligible order that hasn't yet had a
+  // PaymentIntent created for it.
+  stripePaymentIntentId: string | null;
   source: string;
   createdAt: Date;
   updatedAt: Date;
@@ -195,6 +202,7 @@ export async function getOrderById(id: string): Promise<OrderDetail | null> {
     orderNumber: order.orderNumber,
     status: order.status,
     paymentStatus: order.paymentStatus,
+    stripePaymentIntentId: order.stripePaymentIntentId,
     source: order.source,
     createdAt: order.createdAt,
     updatedAt: order.updatedAt,

@@ -193,6 +193,21 @@ export async function setOrderPaymentStatusAction(
       if (!existing) {
         throw new Error("ORDER_NOT_FOUND");
       }
+      // Phase 21C-2D — a Stripe-linked order's paymentStatus is exclusively
+      // authored by the signature-verified webhook handler (src/server/
+      // payments/handle-stripe-webhook.ts), which operates under a higher-
+      // trust, cryptographically-authenticated model than this ordinary
+      // admin action. An admin manually declaring "paid"/"failed"/etc. for
+      // an order Stripe is actively tracking could contradict what Stripe
+      // itself reports, or (worse) manually assert "paid" with no real
+      // payment evidence. This check is the SERVER-SIDE authority — the
+      // admin UI additionally hides the form for a Stripe-linked order
+      // (see OrderPaymentStatusForm.tsx), but that hiding is a courtesy,
+      // not the real boundary; a direct POST to this action is rejected
+      // here regardless of what the UI shows.
+      if (existing.stripePaymentIntentId !== null) {
+        throw new Error("STRIPE_LINKED_ORDER");
+      }
       const from = existing.paymentStatus as PaymentStatus;
       const to = nextStatus as PaymentStatus;
       if (!isValidPaymentStatusTransition(from, to)) {
@@ -212,6 +227,9 @@ export async function setOrderPaymentStatusAction(
   } catch (error) {
     if (error instanceof Error && error.message === "ORDER_NOT_FOUND") {
       return { errors: ["This order no longer exists."] };
+    }
+    if (error instanceof Error && error.message === "STRIPE_LINKED_ORDER") {
+      return { errors: ["This order's payment is managed by Stripe and updates automatically."] };
     }
     if (error instanceof Error && error.message === "INVALID_TRANSITION") {
       return { errors: ["That payment status change isn't allowed from this order's current status."] };

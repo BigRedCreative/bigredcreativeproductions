@@ -156,7 +156,11 @@ export default async function AdminOrderDetailPage({ params }: OrderDetailPagePr
 
           <div className="admin-detail-block">
             <h2>Payment status</h2>
-            <OrderPaymentStatusForm id={order.id} currentStatus={order.paymentStatus as PaymentStatus} />
+            <OrderPaymentStatusForm
+              id={order.id}
+              currentStatus={order.paymentStatus as PaymentStatus}
+              stripePaymentIntentId={order.stripePaymentIntentId}
+            />
           </div>
 
           <div className="admin-detail-block">
