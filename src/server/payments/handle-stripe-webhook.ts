@@ -4,6 +4,7 @@ import { eq } from "drizzle-orm";
 import { getDb } from "@/db";
 import { orders, orderLines, stripeWebhookEvents } from "@/db/schema";
 import { recordAuditEvent } from "@/server/audit-log";
+import { resolvePaymentModeExpectation } from "@/data/deployment-environment";
 
 // Phase 21C-2D — the core, signature-VERIFIED webhook processing logic.
 // Deliberately factored out of the actual Next.js route
@@ -275,17 +276,23 @@ export async function handleStripeWebhookEvent(event: Stripe.Event): Promise<Web
       // information together — see the livemode branch below for why.
       const order = await tx.query.orders.findFirst({ where: eq(orders.stripePaymentIntentId, paymentIntent.id) });
 
-      if (event.livemode) {
-        // Test-mode-only guard. Checked with priority over "order not
-        // found": a livemode event's lack of a matching local order is
-        // fully explained by, and subordinate to, the livemode problem
-        // itself — retrying can never fix a livemode event in this
-        // TEST-MODE-ONLY phase, so this must always classify as the
-        // terminal unexpected_livemode anomaly, never as the retryable
-        // order_not_found (which would incorrectly imply a future retry
-        // might succeed). This deliberately does NOT infer mode from any
-        // whsec_ secret prefix — event.livemode, read from the already
-        // cryptographically verified event body, is the sole signal.
+      // Phase 23 — environment-aware, replacing the original hardcoded
+      // "any livemode:true event is rejected" guard. Checked with priority
+      // over "order not found": an environment/livemode problem is fully
+      // explained by, and subordinate to, the mismatch itself — retrying
+      // can never fix it, so it must always classify as the terminal
+      // unexpected_livemode anomaly, never as the retryable order_not_found
+      // (which would incorrectly imply a future retry might succeed). This
+      // deliberately does NOT infer mode from any whsec_ secret prefix —
+      // event.livemode, read from the already cryptographically verified
+      // event body, is compared against this deployment's own resolved
+      // expectation (development/preview expect livemode:false only;
+      // production expects livemode:true only). An ambiguous/unresolvable
+      // deployment environment is treated identically — never processable,
+      // same terminal reason, since there is no expectation to safely
+      // compare against either way.
+      const modeExpectation = resolvePaymentModeExpectation();
+      if (modeExpectation.kind === "ambiguous" || event.livemode !== modeExpectation.expectedLivemode) {
         return recordAnomaly(tx, order ?? null, paymentIntent.id, event.type, "unexpected_livemode");
       }
 
