@@ -5,7 +5,9 @@ import type { ReactNode } from "react";
 import { observeMotionElement } from "./motion-observer";
 import type { MotionPreset, MotionIntensity, HeroEntrance } from "@/data/motion";
 
-function prefersReducedMotion(): boolean {
+// Exported — HeroMotionShell's cursor-parallax effect reuses this exact
+// check rather than a second implementation.
+export function prefersReducedMotion(): boolean {
   return typeof window !== "undefined" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
 

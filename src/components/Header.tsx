@@ -4,6 +4,7 @@ import { getSiteSettings, getNavigation } from "@/server/queries/site-content";
 import { getPublishedBrandTokens, getDraftBrandTokens } from "@/server/queries/brand";
 import Button from "./ui/Button";
 import CartNavLink from "./CartNavLink";
+import MobileNav from "./MobileNav";
 
 type HeaderProps = {
   // "published" (default) everywhere public. "draft" is used only by the
@@ -48,6 +49,16 @@ export default async function Header({ brandVariant = "published" }: HeaderProps
         ))}
         <CartNavLink />
       </nav>
+      {/* Phase 22 — below 900px the <nav> above is display:none (existing
+          rule), which previously took CartNavLink down with it, leaving
+          mobile visitors with no way to reach the cart at all. This group
+          renders a second, mobile-only instance of the same CartNavLink
+          component (same live cart data, not a duplicated data source)
+          alongside the new menu trigger — visible only under 900px. */}
+      <div className="mobile-nav-controls">
+        <CartNavLink />
+        <MobileNav items={nav.primary} headerCta={nav.headerCta} />
+      </div>
       <Button href={nav.headerCta.href} className="header-cta">
         {nav.headerCta.label}
       </Button>

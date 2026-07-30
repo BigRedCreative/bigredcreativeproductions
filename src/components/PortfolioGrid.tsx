@@ -72,7 +72,7 @@ export default function PortfolioGrid({ projects, preset, intensity, stagger }: 
       >
         {filteredProjects.length > 0 ? (
           filteredProjects.map((project, index) => (
-            <ProjectCard key={project.slug} project={project} index={index} />
+            <ProjectCard key={project.slug} project={project} index={index} featured={index === 0} />
           ))
         ) : (
           <p className="portfolio-empty">No projects in this category yet.</p>
