@@ -18,6 +18,12 @@ export async function generateMetadata(): Promise<Metadata> {
       title: settings.siteName,
       description: settings.ogDescription,
       type: "website",
+      // Phase 22 — settings.ogImageSrc was already fetched here (same
+      // getSiteSettings() call) but never wired into the returned
+      // metadata. No new query, no new admin field, no new source of
+      // truth — site_settings.ogImageSrc remains exactly as
+      // admin-editable as before; this is purely the missing connection.
+      images: settings.ogImageSrc ? [{ url: settings.ogImageSrc }] : undefined,
     },
   };
 }
