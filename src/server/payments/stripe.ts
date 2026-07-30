@@ -6,6 +6,7 @@ import {
   type CreatePaymentIntentRequest,
   type CreatePaymentIntentResult,
 } from "./provider";
+import { evaluateStripeSecretKeyMode } from "@/data/deployment-environment";
 
 // Phase 21C-2B — the ONE file in this codebase allowed to import the
 // `stripe` package, mirroring the exact boundary already established for
@@ -32,14 +33,6 @@ export function buildStripeIdempotencyKey(orderId: string): string {
   return `brcp_payment_${orderId}`;
 }
 
-function isTestModeSecretKey(key: string): boolean {
-  // Real, long-standing Stripe convention: every secret key is prefixed
-  // by its mode. Checked as a plain string prefix — the key's VALUE is
-  // never logged, not even a truncated substring, only this boolean
-  // result.
-  return key.startsWith("sk_test_");
-}
-
 let cachedClient: Stripe | null = null;
 
 // Lazy, server-only construction — mirrors src/server/brain/providers/
@@ -49,23 +42,28 @@ let cachedClient: Stripe | null = null;
 // first time a method below is actually called. This is what lets this
 // file exist, be type-checked, and be exercised via a MockPaymentProvider
 // in tests without ever requiring a real key.
+//
+// Phase 23 — environment-aware key-mode enforcement, replacing the
+// original hardcoded-test-mode-only guard. evaluateStripeSecretKeyMode()
+// (src/data/deployment-environment.ts) is the one place the actual
+// comparison happens — a missing key, a malformed/unrecognized key prefix,
+// an unresolvable ("ambiguous") deployment environment, a live key outside
+// Production, and a test key inside Production are all refused identically
+// there. No client is ever constructed, no network request is ever
+// attempted, and the key's own value never appears in any thrown message
+// or log line.
 function getClient(): Stripe {
   if (cachedClient) return cachedClient;
 
   const key = process.env.STRIPE_SECRET_KEY;
-  if (!key) {
-    // Fails safely, before any network access — no key means no provider,
-    // never a false "available."
-    throw new PaymentProviderError("Stripe is not configured.", "provider_unavailable");
-  }
-  if (!isTestModeSecretKey(key)) {
-    // Phase 21C-2B is TEST MODE ONLY. A live key (sk_live_...) — or
-    // anything not recognizably a test key — is refused outright, before
-    // a client is ever constructed and before any request could reach
-    // Stripe. The key's own value is never included in this error message
-    // or logged anywhere, not even a prefix substring.
+  const check = evaluateStripeSecretKeyMode(key);
+  if (!check.ok || !key) {
     throw new PaymentProviderError(
-      "Refusing to initialize the payment provider: configured key is not a recognized test-mode secret key.",
+      !check.ok && check.reason === "missing_key"
+        ? "Stripe is not configured."
+        : !check.ok && check.reason === "ambiguous_environment"
+          ? "Refusing to initialize the payment provider: the deployment environment could not be safely determined."
+          : "Refusing to initialize the payment provider: configured key does not match the expected mode for this environment.",
       "provider_unavailable",
     );
   }
@@ -186,12 +184,17 @@ export class StripePaymentProvider implements PaymentProvider {
 // place `stripe` is imported) rather than in the webhook route or handler,
 // so those stay free of any direct Stripe SDK dependency and remain fully
 // testable with synthetic Stripe.Event objects. Reuses getClient()'s own
-// sk_test_-only guard on purpose: signature verification is pure local HMAC
-// computation and technically needs no configured secret key at all, but
-// gating it behind the same test-mode check keeps webhook processing tied
-// to the identical "is Stripe genuinely configured for this TEST-MODE-ONLY
-// phase" gate every other payment code path already uses, rather than
-// introducing a second, independent notion of "configured."
+// environment-aware key-mode guard (Phase 23) on purpose: signature
+// verification is pure local HMAC computation and technically needs no
+// configured secret key at all, but gating it behind the same check keeps
+// webhook processing tied to the identical "is Stripe genuinely configured
+// correctly for this deployment environment" gate every other payment code
+// path already uses, rather than introducing a second, independent notion
+// of "configured." One real consequence of this coupling, unchanged by
+// Phase 23: an action that invalidates STRIPE_SECRET_KEY (e.g. an emergency
+// rollback) also halts webhook verification, not just new payment-intent
+// creation — a decoupled, dedicated rollback flag is a documented future
+// refinement, not part of this phase.
 export async function verifyWebhookSignature(
   rawBody: string,
   signatureHeader: string,

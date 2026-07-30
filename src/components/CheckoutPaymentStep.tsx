@@ -3,24 +3,35 @@
 import { useState, type FormEvent, type ReactNode } from "react";
 import { loadStripe, type Stripe } from "@stripe/stripe-js";
 import { Elements, PaymentElement, useElements, useStripe } from "@stripe/react-stripe-js";
+import { evaluateStripePublishableKeyMode } from "@/data/deployment-environment";
 
-// Phase 21C-2C — Stripe test-mode Payment Element. clientSecret is passed
-// in as a prop and only ever handed to Stripe's own <Elements> provider —
-// it is never read out into any other state, logged, or persisted here.
+// Phase 21C-2C — Stripe Payment Element. clientSecret is passed in as a
+// prop and only ever handed to Stripe's own <Elements> provider — it is
+// never read out into any other state, logged, or persisted here.
 // paymentAccessToken never reaches this file at all; CheckoutView.tsx
 // exchanges it for clientSecret before this component is ever rendered.
 
 // Lazy, memoized singleton — loadStripe() should be called once, outside
 // render, matching Stripe's own documented pattern. Fails safely (resolves
-// null) rather than throwing if the configured key is missing or is not a
-// recognized test-mode publishable key — mirrors the exact two-layer
-// test-mode-only discipline already proven server-side in stripe.ts,
-// applied here on the client's own separate credential.
+// null) rather than throwing if the configured key is missing or does not
+// match the expected mode for this deployment environment — mirrors the
+// exact discipline already proven server-side in stripe.ts, applied here
+// on the client's own separate credential. Phase 23 — environment-aware
+// (development/preview expect pk_test_, production expects pk_live_),
+// replacing the original hardcoded pk_test_-only check.
+// evaluateStripePublishableKeyMode() (src/data/deployment-environment.ts)
+// is the exact same centralized evaluator stripe.ts's server-side guard is
+// built on (its secret-key counterpart), so client and server can never
+// independently disagree about which environment this is or what "matches"
+// means.
 let stripePromise: Promise<Stripe | null> | null = null;
 function getStripePromise(): Promise<Stripe | null> {
   if (stripePromise) return stripePromise;
+
   const key = process.env.NEXT_PUBLIC_STRIPE_PUBLISHABLE_KEY;
-  if (!key || !key.startsWith("pk_test_")) {
+  const check = evaluateStripePublishableKeyMode(key);
+
+  if (!check.ok || !key) {
     stripePromise = Promise.resolve(null);
     return stripePromise;
   }

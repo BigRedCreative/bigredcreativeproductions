@@ -91,6 +91,16 @@ const SECURITY_HEADERS = [
 ];
 
 const nextConfig: NextConfig = {
+  // Phase 23 — mirrors the server-only VERCEL_ENV into the client bundle as
+  // a plain, non-secret string (never auto-inlined by Next.js the way
+  // NODE_ENV is). Read exclusively by src/data/deployment-environment.ts's
+  // browser branch, which applies the exact same "development"/"preview"/
+  // "production" resolution logic client-side that the server already uses
+  // — see that file for the full design. The value itself carries no more
+  // information than "which of three known deployment contexts is this."
+  env: {
+    NEXT_PUBLIC_APP_ENV_SIGNAL: process.env.VERCEL_ENV ?? "",
+  },
   images: {
     remotePatterns: [
       {

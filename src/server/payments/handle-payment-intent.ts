@@ -7,6 +7,7 @@ import { verifyPaymentAccessToken } from "./access-token";
 import { isStripePaymentEligible } from "./eligibility";
 import { buildStripeIdempotencyKey } from "./stripe";
 import { PaymentProviderError, type PaymentProvider } from "./provider";
+import { resolvePaymentModeExpectation } from "@/data/deployment-environment";
 
 // Phase 21C-2B — the core payment-intent request logic, deliberately
 // factored out of the actual Next.js route (src/app/api/orders/[id]/
@@ -19,6 +20,20 @@ import { PaymentProviderError, type PaymentProvider } from "./provider";
 // the route file's own comment for why that split matters.
 
 const RECONCILIATION_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+// Phase 23 — a PaymentIntent's own reported `livemode` is checked against
+// this deployment's resolved expectation (development/preview expect
+// livemode:false, production expects livemode:true), replacing the
+// original hardcoded "any livemode:true PaymentIntent is unexpected" check.
+// An ambiguous/unresolvable deployment environment is treated identically
+// to a genuine mismatch — there is no expectation to safely compare
+// against either way, so it must fail the same closed way. Used by both
+// the resume (Case 4) and fresh-create paths below, so the comparison
+// logic exists in exactly one place.
+function isUnexpectedLivemode(livemode: boolean): boolean {
+  const expectation = resolvePaymentModeExpectation();
+  return expectation.kind === "ambiguous" || livemode !== expectation.expectedLivemode;
+}
 
 // Closed, fully-approved vocabulary for payment.reference_anomaly's own
 // `reason` field. `unexpected_livemode` was proposed mid-implementation
@@ -111,7 +126,7 @@ export async function handlePaymentIntentRequest(
         });
         return { kind: "anomaly", reason: "missing_provider_reference" };
       }
-      if (existingIntent.livemode) {
+      if (isUnexpectedLivemode(existingIntent.livemode)) {
         // See PaymentAnomalyReason's own doc comment above.
         await recordAuditEvent(db, {
           adminUserId: null,
@@ -189,11 +204,10 @@ export async function handlePaymentIntentRequest(
       throw error;
     }
 
-    if (created.livemode) {
-      // Critical safety check, independent of the key-prefix guard
-      // already enforced in stripe.ts's own client construction — never
-      // trust one signal alone. Do NOT persist the id, do NOT change
-      // paymentStatus.
+    if (isUnexpectedLivemode(created.livemode)) {
+      // Critical safety check, independent of the key-mode guard already
+      // enforced in stripe.ts's own client construction — never trust one
+      // signal alone. Do NOT persist the id, do NOT change paymentStatus.
       await recordAuditEvent(db, {
         adminUserId: null,
         action: "payment.reference_anomaly",
